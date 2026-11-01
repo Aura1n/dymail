@@ -426,7 +426,8 @@ const drafts = [
 
 const demoOpened = [];
 const demoNotifications = [];
-window.dymailDemoCalls = { opened: demoOpened, notifications: demoNotifications };
+const demoAccountSaves = [];
+window.dymailDemoCalls = { opened: demoOpened, notifications: demoNotifications, accountSaves: demoAccountSaves };
 
 const settings = {
   theme: 'system',
@@ -537,7 +538,7 @@ function makeId(prefix) {
 export function createDemoApi() {
   return {
     app: {
-      info: async () => ({ version: '1.1.0', platform: 'win32', packaged: false }),
+      info: async () => ({ version: '1.1.1', platform: 'win32', packaged: false }),
       open: async (url) => {
         demoOpened.push(String(url || ''));
         return true;
@@ -552,6 +553,7 @@ export function createDemoApi() {
       list: async () => accounts.map(accountView),
       save: async (payload) => {
         await wait(320);
+        demoAccountSaves.push({ email: payload.email, password: payload.password });
         const existing = payload.id ? findAccount(payload.id) : null;
         if (existing) {
           existing.email = String(payload.email || existing.email);
@@ -884,10 +886,10 @@ export function createDemoApi() {
         await wait(400);
         if (!settings.updateRepo) throw new Error('未配置更新源，请填写 owner/repo');
         return {
-          current: '1.1.0',
+          current: '1.1.1',
           latest: '1.2.0',
           hasUpdate: true,
-          notes: '· 新增托盘常驻与新邮件通知\n· 阅读页窄屏自适应',
+          notes: '· Gmail 账户改用应用专用密码指引\n· 阅读页窄屏自适应',
           url: `https://github.com/${settings.updateRepo}/releases/latest`,
           page: `https://github.com/${settings.updateRepo}/releases`,
           checkedAt: Date.now()

@@ -1355,6 +1355,11 @@ dialog.settings-sheet {
   grid-column: span 2;
 }
 
+/* Keep a full-width link hug its text instead of centring across both columns. */
+.link-btn.span-2 {
+  justify-self: start;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -1426,6 +1431,10 @@ dialog.settings-sheet {
   color: var(--text-3);
   min-height: 14px;
   margin-top: -5px;
+}
+
+.field-hint.warn {
+  color: var(--warning);
 }
 
 .advanced {

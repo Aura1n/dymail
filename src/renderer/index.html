@@ -157,13 +157,15 @@
             <select id="account-provider"></select>
           </label>
           <label class="field span-2">
-            <span class="field-label">密码或授权码</span>
+            <span class="field-label" id="account-password-label">密码或授权码</span>
             <span class="password-field">
               <input id="account-password" type="password" autocomplete="new-password">
               <button type="button" class="password-toggle" id="account-eye" title="显示密码"><span data-icon="eye"></span></button>
             </span>
           </label>
           <p class="field-hint span-2" id="account-hint"></p>
+          <p class="field-hint warn span-2" id="account-password-warn" hidden></p>
+          <button type="button" class="link-btn span-2" id="account-help" hidden></button>
           <details class="advanced span-2" id="account-advanced">
             <summary>服务器设置</summary>
             <div class="server-grid">

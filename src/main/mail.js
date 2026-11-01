@@ -72,21 +72,41 @@ function normalizeReferences(value) {
   return String(value || '').replace(/[\r\n]+/g, ' ').trim();
 }
 
-function friendlyError(err, prefix) {
+function isAuthFailure(err) {
+  const code = String((err && err.code) || '').toUpperCase();
+  const lower = String((err && err.message) || '').toLowerCase();
+  return Boolean(
+    (err && err.authenticationFailed) ||
+      code === 'EAUTH' ||
+      code.includes('AUTHENTICATIONFAILED') ||
+      lower.includes('authentication failed') ||
+      lower.includes('invalid credentials') ||
+      lower.includes('login failed') ||
+      lower.includes('username and password not accepted') ||
+      lower.includes('invalid username or password')
+  );
+}
+
+// Workspace mailboxes use the same hosts as consumer Gmail, so the host alone
+// is enough to know Google is the one rejecting the credentials.
+function isGoogleMail(account) {
+  const hosts = [account && account.imap && account.imap.host, account && account.smtp && account.smtp.host]
+    .map((host) => String(host || '').toLowerCase());
+  const domain = String((account && account.email) || '').split('@').pop().toLowerCase();
+  return (
+    hosts.some((host) => /(^|\.)(gmail|googlemail)\.com$/.test(host)) || domain === 'gmail.com' || domain === 'googlemail.com'
+  );
+}
+
+function friendlyError(err, prefix, account) {
   const code = String((err && err.code) || '').toUpperCase();
   const message = String((err && err.message) || '');
   const lower = message.toLowerCase();
   let text = '';
-  if (
-    (err && err.authenticationFailed) ||
-    code.includes('AUTHENTICATIONFAILED') ||
-    lower.includes('authentication failed') ||
-    lower.includes('invalid credentials') ||
-    lower.includes('login failed') ||
-    lower.includes('username and password not accepted') ||
-    lower.includes('invalid username or password')
-  ) {
-    text = '邮箱或密码不正确，或需要应用授权码';
+  if (isAuthFailure(err)) {
+    text = isGoogleMail(account)
+      ? 'Gmail 不接受账号密码：请在 Google 账号开启两步验证，再生成 16 位「应用专用密码」填入密码框；企业或学校域名通常只能改用 OAuth 登录'
+      : '邮箱或密码不正确，或需要应用授权码';
   } else if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || lower.includes('getaddrinfo')) {
     text = '无法解析邮件服务器地址';
   } else if (code === 'ECONNREFUSED') {
@@ -288,13 +308,13 @@ class MailService {
         client.close();
       } catch {}
     }
-    if (imapError) throw new Error(friendlyError(imapError, 'IMAP：'));
+    if (imapError) throw new Error(friendlyError(imapError, 'IMAP：', account));
 
     const transport = this._transport(account, pass);
     try {
       await transport.verify();
     } catch (err) {
-      throw new Error(friendlyError(err, 'SMTP：'));
+      throw new Error(friendlyError(err, 'SMTP：', account));
     } finally {
       try {
         transport.close();
@@ -378,7 +398,7 @@ class MailService {
             ...account,
             folders: cached,
             draftCount: this.store.draftCount(account.id),
-            error: friendlyError(err)
+            error: friendlyError(err, '', account)
           };
         }
       })
@@ -496,7 +516,7 @@ class MailService {
         errors.push({
           accountId: account.id,
           accountEmail: account.email,
-          error: friendlyError(result.reason)
+          error: friendlyError(result.reason, '', account)
         });
       }
     });
@@ -557,7 +577,7 @@ class MailService {
         errors.push({
           accountId: account.id,
           accountEmail: account.email,
-          error: friendlyError(result.reason)
+          error: friendlyError(result.reason, '', account)
         });
       }
     });
@@ -837,7 +857,7 @@ class MailService {
     try {
       raw = await compileMessage(mailOptions);
     } catch (err) {
-      throw new Error(friendlyError(err));
+      throw new Error(friendlyError(err, '', account));
     }
     const transport = this._transport(account, pass);
     let info;
@@ -847,7 +867,7 @@ class MailService {
         raw
       });
     } catch (err) {
-      throw new Error(friendlyError(err));
+      throw new Error(friendlyError(err, '', account));
     } finally {
       try {
         transport.close();
@@ -869,7 +889,7 @@ class MailService {
         });
         savedToSent = true;
       } catch (err) {
-        warning = friendlyError(err, '已发送，但未能保存副本：');
+        warning = friendlyError(err, '已发送，但未能保存副本：', account);
       }
     }
     return {

@@ -30,7 +30,11 @@ const PROVIDERS = [
     label: 'Gmail',
     imap: { host: 'imap.gmail.com', port: 993, secure: true },
     smtp: { host: 'smtp.gmail.com', port: 465, secure: true },
-    hint: '使用应用专用密码'
+    hint: 'Google 已停用账号密码登录，需填写开启两步验证后生成的 16 位应用专用密码',
+    passwordLabel: '应用专用密码',
+    strictPasswordFormat: /^[a-z0-9]{16}$/i,
+    helpLabel: '如何获取应用专用密码',
+    helpUrl: 'https://support.google.com/accounts/answer/185833?hl=zh-Hans'
   },
   {
     id: 'outlook',
@@ -231,6 +235,7 @@ function cacheElements() {
     'action-reply', 'action-reply-all', 'action-forward', 'action-archive', 'action-trash', 'remote-banner',
     'show-images', 'reader-attachments', 'mail-frame', 'reader-loading', 'account-dialog', 'account-form',
     'account-title', 'account-email', 'account-name', 'account-provider', 'account-password', 'account-eye',
+    'account-password-label', 'account-password-warn', 'account-help',
     'account-hint', 'account-advanced', 'imap-host', 'imap-port', 'imap-secure', 'smtp-host', 'smtp-port',
     'smtp-secure', 'account-error', 'account-delete', 'account-submit', 'settings-dialog', 'settings-title',
     'settings-accounts', 'settings-add-account', 'refresh-select', 'signature-input', 'general-save',
@@ -2216,12 +2221,27 @@ function setServerFields(imap, smtp) {
   els.smtpSecure.checked = smtp.secure !== false;
 }
 
-function applyProviderToForm(provider, { fillServers = true } = {}) {
+function updatePasswordFormatHint() {
+  const provider = providerById(els.accountProvider.value);
+  const value = els.accountPassword.value.replace(/\s+/g, '');
+  const mismatch = Boolean(provider.strictPasswordFormat) && value.length > 0 && !provider.strictPasswordFormat.test(value);
+  els.accountPasswordWarn.hidden = !mismatch;
+  els.accountPasswordWarn.textContent = mismatch
+    ? `${provider.label} 不接受登录密码，请改用${provider.passwordLabel}`
+    : '';
+}
+
+function applyProviderToForm(provider, { fillServers = true, revealAdvanced = true } = {}) {
   if (fillServers && provider.id !== 'custom') {
     setServerFields(provider.imap, provider.smtp);
   }
   els.accountHint.textContent = provider.hint || '';
-  if (provider.id === 'custom') els.accountAdvanced.open = true;
+  els.accountPasswordLabel.textContent = provider.passwordLabel || '密码或授权码';
+  els.accountHelp.hidden = !provider.helpUrl;
+  els.accountHelp.textContent = provider.helpLabel || '查看获取方式';
+  els.accountHelp.dataset.url = provider.helpUrl || '';
+  updatePasswordFormatHint();
+  if (revealAdvanced && provider.id === 'custom') els.accountAdvanced.open = true;
 }
 
 function setAccountBusy(busy) {
@@ -2261,7 +2281,7 @@ function openAccountDialog(accountId) {
   els.accountProvider.value = providerId;
   if (account) {
     setServerFields(account.imap, account.smtp);
-    els.accountHint.textContent = providerById(providerId).hint || '';
+    applyProviderToForm(providerById(providerId), { fillServers: false, revealAdvanced: false });
   } else {
     const provider = providerById('custom');
     setServerFields({ host: '', port: '', secure: true }, { host: '', port: '', secure: true });
@@ -2294,7 +2314,12 @@ function gatherAccountForm() {
   const smtpPort = Number(els.smtpPort.value);
   if (!Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535) throw new Error('IMAP 端口无效');
   if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) throw new Error('SMTP 端口无效');
-  const password = els.accountPassword.value;
+  // Google shows app passwords in four-character groups; the spaces are not part
+  // of the secret and IMAP login fails when they are sent along with it.
+  const provider = providerById(els.accountProvider.value);
+  const password = provider.strictPasswordFormat
+    ? els.accountPassword.value.replace(/\s+/g, '')
+    : els.accountPassword.value;
   const existing = state.editingAccountId ? accountById(state.editingAccountId) : null;
   if (!password && !(existing && existing.hasPassword)) throw new Error('请输入密码或授权码');
   return {
@@ -2883,6 +2908,13 @@ function bindAccountDialog() {
     applyProviderToForm(provider);
   });
 
+  els.accountPassword.addEventListener('input', updatePasswordFormatHint);
+
+  els.accountHelp.addEventListener('click', () => {
+    const url = els.accountHelp.dataset.url;
+    if (url) api.app.open(url).catch(() => {});
+  });
+
   els.accountEmail.addEventListener('blur', () => {
     if (state.editingAccountId) return;
     if (els.accountProvider.value !== 'custom') return;
@@ -3115,7 +3147,7 @@ function exposeDemoDebug() {
   window.__dymailDemo = {
     state,
     openSettings,
-    openAccount: () => openAccountDialog(),
+    openAccount: (id) => openAccountDialog(id),
     setTheme,
     openCompose: () => openNewCompose(),
     selectFirst: () => {
