@@ -398,7 +398,8 @@ function registerIpc() {
     if (!/^\d+(\.\d+)*/.test(latest)) throw new Error('无法识别最新版本号');
     const current = app.getVersion();
     const assets = Array.isArray(release.assets) ? release.assets : [];
-    const installer = assets.find((asset) => /\.exe$/i.test(String(asset.name || '')));
+    const exeAssets = assets.filter((asset) => /\.exe$/i.test(String(asset.name || '')));
+    const installer = exeAssets.find((asset) => /setup/i.test(String(asset.name || ''))) || exeAssets[0];
     const page = String(release.html_url || `https://github.com/${repo}/releases`);
     return {
       current,
