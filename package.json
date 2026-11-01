@@ -1,0 +1,72 @@
+{
+  "name": "dymail",
+  "productName": "Dymail",
+  "version": "1.1.0",
+  "description": "Unified desktop mail client",
+  "main": "src/main/main.js",
+  "author": "Dymail",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-icon.ps1 && node scripts/make-ico.js",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win portable nsis"
+  },
+  "dependencies": {
+    "imapflow": "2.10.0",
+    "mailparser": "3.14.1",
+    "nodemailer": "10.3.1"
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "png-to-ico": "2.1.8"
+  },
+  "build": {
+    "appId": "com.dymail.client",
+    "productName": "Dymail",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "portable": {
+      "artifactName": "Dymail-${version}.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Dymail",
+      "uninstallDisplayName": "Dymail",
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "artifactName": "Dymail-Setup-${version}.exe"
+    }
+  }
+}

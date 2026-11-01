@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src mailview: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; media-src data: blob:">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dymail</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="titlebar">
+      <div class="titlebar-brand">
+        <div class="brand">
+          <span class="brand-mark" data-icon="inbox"></span>
+          <span class="brand-name">Dymail</span>
+        </div>
+      </div>
+      <div class="titlebar-main">
+        <div class="searchfield" id="search-field">
+          <span class="search-icon" data-icon="search"></span>
+          <input id="search-input" type="search" placeholder="搜索" autocomplete="off" spellcheck="false" aria-label="搜索邮件">
+          <button class="search-clear" id="search-clear" type="button" title="清除" hidden></button>
+        </div>
+        <div class="titlebar-actions">
+          <button type="button" class="compose-btn" id="compose-btn">
+            <span data-icon="compose"></span>
+            <span>新邮件</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar">
+        <nav class="sidebar-scroll" id="sidebar-nav" aria-label="邮箱"></nav>
+        <div class="sidebar-foot">
+          <button type="button" class="icon-btn" id="add-account-btn" title="添加账户" aria-label="添加账户">
+            <span data-icon="plus"></span>
+          </button>
+          <button type="button" class="icon-btn" id="settings-btn" title="设置" aria-label="设置">
+            <span data-icon="settings"></span>
+          </button>
+          <span class="sync-indicator" id="sync-indicator" hidden><span class="spinner tiny"></span></span>
+        </div>
+      </aside>
+
+      <section class="list-pane" aria-label="邮件列表">
+        <header class="list-head">
+          <div class="list-heading">
+            <h1 id="view-title">收件箱</h1>
+            <span class="view-count" id="view-count"></span>
+          </div>
+          <div class="list-tools">
+            <button type="button" class="icon-btn" id="filter-unread" title="只看未读" aria-pressed="false">
+              <span data-icon="unread-dot"></span>
+            </button>
+            <button type="button" class="icon-btn" id="mark-all-read" title="全部标为已读" hidden>
+              <span data-icon="checkAll"></span>
+            </button>
+            <button type="button" class="icon-btn" id="refresh-btn" title="刷新" aria-label="刷新">
+              <span data-icon="refresh"></span>
+            </button>
+          </div>
+        </header>
+        <div class="list-banner" id="list-banner" hidden>
+          <span data-icon="warning"></span>
+          <span class="list-banner-text" id="list-banner-text"></span>
+        </div>
+        <div class="message-list" id="message-list" tabindex="0"></div>
+        <div class="list-foot" id="list-foot" hidden>
+          <button type="button" class="load-more-btn" id="load-more">加载更多</button>
+        </div>
+      </section>
+
+      <section class="reader-pane" aria-label="邮件">
+        <div class="reader-empty" id="reader-empty">
+          <span class="empty-icon" data-icon="inbox"></span>
+          <p id="reader-empty-text">选择邮件</p>
+          <button type="button" class="btn" id="reader-empty-action" hidden></button>
+        </div>
+
+        <div class="reader-view" id="reader-view" hidden>
+          <header class="reader-head">
+            <div class="reader-top">
+              <div class="reader-title-block">
+                <h2 class="reader-subject" id="reader-subject"></h2>
+                <div class="reader-sender-row">
+                  <span class="avatar reader-avatar" id="reader-avatar"></span>
+                  <div class="reader-sender">
+                    <span class="reader-from" id="reader-from"></span>
+                    <span class="reader-address" id="reader-address"></span>
+                  </div>
+                  <span class="reader-date" id="reader-date"></span>
+                </div>
+                <div class="reader-recipients" id="reader-recipients"></div>
+              </div>
+              <div class="reader-actions">
+                <button type="button" class="icon-btn" id="action-star" title="星标">
+                  <span data-icon="star"></span>
+                </button>
+                <button type="button" class="icon-btn" id="action-unread" title="标为未读">
+                  <span data-icon="unread-dot"></span>
+                </button>
+                <button type="button" class="icon-btn" id="action-reply" title="回复">
+                  <span data-icon="reply"></span>
+                </button>
+                <button type="button" class="icon-btn" id="action-reply-all" title="回复全部">
+                  <span data-icon="replyAll"></span>
+                </button>
+                <button type="button" class="icon-btn" id="action-forward" title="转发">
+                  <span data-icon="forward"></span>
+                </button>
+                <span class="action-divider"></span>
+                <button type="button" class="icon-btn" id="action-archive" title="归档">
+                  <span data-icon="archive"></span>
+                </button>
+                <button type="button" class="icon-btn" id="action-trash" title="删除">
+                  <span data-icon="trash"></span>
+                </button>
+              </div>
+            </div>
+            <div class="reader-banner" id="remote-banner" hidden>
+              <span data-icon="eye-off"></span>
+              <span>已阻止远程图片</span>
+              <button type="button" class="link-btn" id="show-images">显示图片</button>
+            </div>
+            <div class="reader-attachments" id="reader-attachments" hidden></div>
+          </header>
+          <div class="reader-body">
+            <iframe id="mail-frame" sandbox="allow-popups" referrerpolicy="no-referrer" title="邮件正文"></iframe>
+          </div>
+          <div class="reader-loading" id="reader-loading" hidden><span class="spinner"></span></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <dialog class="sheet account-sheet" id="account-dialog">
+    <form id="account-form" novalidate>
+      <header class="dialog-head">
+        <h2 id="account-title">添加账户</h2>
+        <button type="button" class="icon-btn" data-close="account" title="关闭"><span data-icon="close"></span></button>
+      </header>
+      <div class="dialog-body">
+        <div class="form-grid">
+          <label class="field span-2">
+            <span class="field-label">邮箱地址</span>
+            <input id="account-email" type="text" inputmode="email" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">
+            <span class="field-label">显示名称</span>
+            <input id="account-name" type="text" autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-label">提供方</span>
+            <select id="account-provider"></select>
+          </label>
+          <label class="field span-2">
+            <span class="field-label">密码或授权码</span>
+            <span class="password-field">
+              <input id="account-password" type="password" autocomplete="new-password">
+              <button type="button" class="password-toggle" id="account-eye" title="显示密码"><span data-icon="eye"></span></button>
+            </span>
+          </label>
+          <p class="field-hint span-2" id="account-hint"></p>
+          <details class="advanced span-2" id="account-advanced">
+            <summary>服务器设置</summary>
+            <div class="server-grid">
+              <div class="server-block">
+                <div class="server-title">IMAP</div>
+                <div class="server-row">
+                  <input id="imap-host" type="text" placeholder="服务器地址" autocomplete="off" spellcheck="false">
+                  <input id="imap-port" type="number" placeholder="端口" min="1" max="65535">
+                </div>
+                <label class="check"><input id="imap-secure" type="checkbox" checked> SSL/TLS</label>
+              </div>
+              <div class="server-block">
+                <div class="server-title">SMTP</div>
+                <div class="server-row">
+                  <input id="smtp-host" type="text" placeholder="服务器地址" autocomplete="off" spellcheck="false">
+                  <input id="smtp-port" type="number" placeholder="端口" min="1" max="65535">
+                </div>
+                <label class="check"><input id="smtp-secure" type="checkbox" checked> SSL/TLS</label>
+              </div>
+            </div>
+          </details>
+          <p class="form-error span-2" id="account-error" hidden></p>
+        </div>
+      </div>
+      <footer class="dialog-foot">
+        <button type="button" class="btn danger-ghost" id="account-delete" hidden>删除账户</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close="account">取消</button>
+        <button type="submit" class="btn primary" id="account-submit">保存</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog class="sheet settings-sheet" id="settings-dialog">
+    <div class="settings-layout">
+      <nav class="settings-nav">
+        <div class="settings-heading">设置</div>
+        <button type="button" class="settings-tab is-active" data-tab="accounts">账户</button>
+        <button type="button" class="settings-tab" data-tab="general">常规</button>
+        <button type="button" class="settings-tab" data-tab="appearance">外观</button>
+        <button type="button" class="settings-tab" data-tab="update">更新</button>
+      </nav>
+      <div class="settings-main">
+        <header class="settings-head">
+          <h2 id="settings-title">账户</h2>
+          <button type="button" class="icon-btn" data-close="settings" title="关闭"><span data-icon="close"></span></button>
+        </header>
+        <section class="settings-panel" data-panel="accounts">
+          <div class="settings-accounts" id="settings-accounts"></div>
+          <button type="button" class="btn add-account-row" id="settings-add-account">
+            <span data-icon="plus"></span><span>添加账户</span>
+          </button>
+        </section>
+        <section class="settings-panel" data-panel="general" hidden>
+          <div class="settings-scroll">
+            <label class="setting-row">
+              <span class="setting-label">刷新间隔</span>
+              <select id="refresh-select">
+                <option value="0">关闭</option>
+                <option value="30">30 秒</option>
+                <option value="60">1 分钟</option>
+                <option value="120">2 分钟</option>
+                <option value="300">5 分钟</option>
+              </select>
+            </label>
+            <label class="setting-row">
+              <span class="setting-label">阻止邮件远程图片</span>
+              <span class="switch"><input type="checkbox" id="block-remote-input"><span></span></span>
+            </label>
+            <label class="setting-row">
+              <span class="setting-label">新邮件通知</span>
+              <span class="switch"><input type="checkbox" id="notify-input"><span></span></span>
+            </label>
+            <label class="setting-row">
+              <span class="setting-label">关闭时留在后台</span>
+              <span class="switch"><input type="checkbox" id="tray-input"><span></span></span>
+            </label>
+            <label class="setting-block">
+              <span class="setting-label">签名</span>
+              <textarea id="signature-input" rows="7" spellcheck="true"></textarea>
+            </label>
+          </div>
+          <footer class="settings-foot">
+            <button type="button" class="btn primary" id="general-save">保存</button>
+            <span class="settings-note" id="general-note"></span>
+          </footer>
+        </section>
+        <section class="settings-panel" data-panel="appearance" hidden>
+          <div class="settings-scroll">
+            <div class="setting-block">
+              <span class="setting-label">主题</span>
+              <div class="theme-options" id="theme-options">
+                <button type="button" class="theme-tile" data-theme-choice="system">
+                  <span class="theme-preview theme-preview-system"><span></span><span></span></span>
+                  <span class="theme-name">跟随系统</span>
+                </button>
+                <button type="button" class="theme-tile" data-theme-choice="light">
+                  <span class="theme-preview theme-preview-light"><span></span><span></span></span>
+                  <span class="theme-name">浅色</span>
+                </button>
+                <button type="button" class="theme-tile" data-theme-choice="dark">
+                  <span class="theme-preview theme-preview-dark"><span></span><span></span></span>
+                  <span class="theme-name">深色</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="settings-panel" data-panel="update" hidden>
+          <div class="settings-scroll">
+            <div class="setting-row">
+              <span class="setting-label">当前版本</span>
+              <span class="setting-value" id="update-version">—</span>
+            </div>
+            <label class="setting-row">
+              <span class="setting-label">自动检查更新</span>
+              <span class="switch"><input type="checkbox" id="update-check-input"><span></span></span>
+            </label>
+            <label class="setting-block">
+              <span class="setting-label">GitHub 仓库</span>
+              <input id="update-repo-input" type="text" placeholder="owner/repo" spellcheck="false" autocomplete="off">
+            </label>
+            <div class="setting-row">
+              <span class="setting-label">已忽略版本</span>
+              <span class="setting-value">
+                <span id="update-skipped">无</span>
+                <button type="button" class="link-btn" id="update-reset-skip" hidden>取消忽略</button>
+              </span>
+            </div>
+          </div>
+          <footer class="settings-foot">
+            <button type="button" class="btn primary" id="update-check-now">检查更新</button>
+            <span class="settings-note" id="update-note"></span>
+          </footer>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="sheet update-dialog" id="update-dialog">
+    <div class="update-card">
+      <div class="update-title">发现新版本</div>
+      <div class="update-meta"><span id="update-from"></span><span class="update-arrow">→</span><strong id="update-to"></strong></div>
+      <div class="update-notes" id="update-notes"></div>
+      <footer class="update-foot">
+        <button type="button" class="link-btn" id="update-ignore">忽略此版本</button>
+        <span class="update-spacer"></span>
+        <button type="button" class="btn" id="update-later">以后再说</button>
+        <button type="button" class="btn primary" id="update-download">下载更新</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <div class="compose-layer" id="compose-layer" hidden>
+    <section class="compose" id="compose" aria-label="写信">
+      <header class="compose-head">
+        <div class="compose-title" id="compose-title">新邮件</div>
+        <div class="compose-head-actions">
+          <button type="button" class="icon-btn" id="compose-discard" title="删除草稿"><span data-icon="trash"></span></button>
+          <button type="button" class="icon-btn" id="compose-close" title="关闭"><span data-icon="close"></span></button>
+        </div>
+      </header>
+      <div class="compose-fields">
+        <div class="compose-line">
+          <span class="compose-label">发件人</span>
+          <select id="compose-account"></select>
+        </div>
+        <div class="compose-line">
+          <span class="compose-label">收件人</span>
+          <input id="compose-to" type="text" autocomplete="off" spellcheck="false">
+          <button type="button" class="link-btn" id="toggle-cc">抄送</button>
+          <button type="button" class="link-btn" id="toggle-bcc">密送</button>
+        </div>
+        <div class="compose-line" id="compose-cc-line" hidden>
+          <span class="compose-label">抄送</span>
+          <input id="compose-cc" type="text" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="compose-line" id="compose-bcc-line" hidden>
+          <span class="compose-label">密送</span>
+          <input id="compose-bcc" type="text" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="compose-line">
+          <span class="compose-label">主题</span>
+          <input id="compose-subject" type="text" autocomplete="off">
+        </div>
+      </div>
+      <div class="compose-toolbar">
+        <button type="button" class="icon-btn" data-cmd="bold" title="加粗"><span data-icon="bold"></span></button>
+        <button type="button" class="icon-btn" data-cmd="italic" title="斜体"><span data-icon="italic"></span></button>
+        <button type="button" class="icon-btn" data-cmd="underline" title="下划线"><span data-icon="underline"></span></button>
+        <span class="toolbar-divider"></span>
+        <button type="button" class="icon-btn" data-cmd="insertUnorderedList" title="列表"><span data-icon="list"></span></button>
+        <span class="toolbar-divider"></span>
+        <button type="button" class="icon-btn attach-btn" id="compose-attach" title="添加附件"><span data-icon="paperclip"></span></button>
+      </div>
+      <div class="compose-editor-wrap" id="compose-editor-wrap">
+        <div class="compose-editor" id="compose-editor" contenteditable="true" spellcheck="true"></div>
+      </div>
+      <div class="compose-attachments" id="compose-attachments" hidden></div>
+      <footer class="compose-foot">
+        <button type="button" class="btn primary" id="compose-send">发送</button>
+        <span class="compose-hint" id="compose-hint"></span>
+        <span class="spacer"></span>
+        <button type="button" class="link-btn" id="compose-save">保存草稿</button>
+      </footer>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
