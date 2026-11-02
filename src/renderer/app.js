@@ -41,63 +41,89 @@ const PROVIDERS = [
     label: 'Outlook',
     imap: { host: 'outlook.office365.com', port: 993, secure: true },
     smtp: { host: 'smtp.office365.com', port: 587, secure: false },
-    hint: '需启用 IMAP 与 SMTP'
+    hint: '微软已停用账号密码登录：需开启两步验证后生成应用专用密码',
+    passwordLabel: '应用专用密码',
+    helpLabel: '如何获取应用专用密码',
+    helpUrl: 'https://support.microsoft.com/zh-cn/accounts-billing/manage/how-to-get-and-use-app-passwords'
   },
   {
     id: 'qq',
     label: 'QQ 邮箱',
     imap: { host: 'imap.qq.com', port: 993, secure: true },
     smtp: { host: 'smtp.qq.com', port: 465, secure: true },
-    hint: '开启 IMAP 后使用授权码'
+    hint: '在网页版邮箱开启 IMAP/SMTP 服务后生成授权码',
+    passwordLabel: '授权码',
+    helpLabel: '如何获取授权码',
+    helpUrl: 'https://help.mail.qq.com/detail/106/985'
   },
   {
     id: '163',
     label: '163 邮箱',
     imap: { host: 'imap.163.com', port: 993, secure: true },
     smtp: { host: 'smtp.163.com', port: 465, secure: true },
-    hint: '使用授权码'
+    hint: '在网页版邮箱开启 IMAP/SMTP 服务后生成授权码',
+    passwordLabel: '授权码',
+    helpLabel: '如何获取授权码',
+    helpUrl: 'http://u.163.com/cyqCpfaYf'
   },
   {
     id: '126',
     label: '126 邮箱',
     imap: { host: 'imap.126.com', port: 993, secure: true },
     smtp: { host: 'smtp.126.com', port: 465, secure: true },
-    hint: '使用授权码'
+    hint: '在网页版邮箱开启 IMAP/SMTP 服务后生成授权码',
+    passwordLabel: '授权码',
+    helpLabel: '如何获取授权码',
+    helpUrl: 'http://u.163.com/cyqCpfaYf'
   },
   {
     id: 'sina',
     label: '新浪邮箱',
     imap: { host: 'imap.sina.com', port: 993, secure: true },
     smtp: { host: 'smtp.sina.com', port: 465, secure: true },
-    hint: '需开启 IMAP'
+    hint: '在网页版邮箱开启 IMAP4/SMTP 服务后生成 16 位授权码',
+    passwordLabel: '授权码',
+    helpLabel: '如何获取授权码',
+    helpUrl: 'https://help.sina.com.cn/comquestiondetail/view/1566/'
   },
   {
     id: 'aliyun',
     label: '阿里邮箱',
     imap: { host: 'imap.aliyun.com', port: 993, secure: true },
     smtp: { host: 'smtp.aliyun.com', port: 465, secure: true },
-    hint: ''
+    hint: '默认使用登录密码；开启三方客户端安全密码后填安全密码',
+    helpLabel: '客户端配置说明',
+    helpUrl: 'https://help.aliyun.com/zh/document_detail/36687.html'
   },
   {
     id: 'exmail',
     label: '腾讯企业邮',
     imap: { host: 'imap.exmail.qq.com', port: 993, secure: true },
     smtp: { host: 'smtp.exmail.qq.com', port: 465, secure: true },
-    hint: ''
+    hint: '开启安全登录后，需在网页版生成客户端专用密码',
+    passwordLabel: '客户端专用密码',
+    helpLabel: '客户端配置说明',
+    helpUrl: 'https://open.work.weixin.qq.com/help2/pc/19886'
   },
   {
     id: 'icloud',
     label: 'iCloud',
     imap: { host: 'imap.mail.me.com', port: 993, secure: true },
     smtp: { host: 'smtp.mail.me.com', port: 587, secure: false },
-    hint: '使用应用专用密码'
+    hint: '需开启双重认证后，在 Apple 账户里生成 App 专用密码',
+    passwordLabel: 'App 专用密码',
+    helpLabel: '如何获取 App 专用密码',
+    helpUrl: 'https://support.apple.com/zh-cn/102654'
   },
   {
     id: 'yahoo',
     label: 'Yahoo',
     imap: { host: 'imap.mail.yahoo.com', port: 993, secure: true },
     smtp: { host: 'smtp.mail.yahoo.com', port: 465, secure: true },
-    hint: '使用应用密码'
+    hint: '在账户安全页生成应用密码',
+    passwordLabel: '应用密码',
+    helpLabel: '如何生成应用密码',
+    helpUrl: 'https://help.yahoo.com/kb/SLN15241.html'
   },
   {
     id: 'custom',
@@ -187,7 +213,8 @@ const state = {
   appVersion: '',
   unseenCounts: new Map(),
   updateBusy: false,
-  updateOffer: null
+  updateOffer: null,
+  updateTimer: null
 };
 
 init().catch((err) => {
@@ -216,6 +243,7 @@ async function init() {
 
   applyTheme();
   updateThemeTiles();
+  scheduleUpdateCheck();
   scheduleRefresh();
   renderSidebar();
   renderHeader();
@@ -225,16 +253,26 @@ async function init() {
   loadContacts();
 
   await loadBaseAccounts();
-  scheduleUpdateCheck();
 
   if (DEMO) exposeDemoDebug();
 }
 
+/* Releases can ship at any moment, so check on every boot and every 6h while
+   the app stays open; the old "checked within 24h" gate hid a new version for
+   the rest of the day. */
+const UPDATE_RECHECK_MS = 6 * 60 * 60 * 1000;
+
 function scheduleUpdateCheck() {
+  if (state.updateTimer) {
+    clearInterval(state.updateTimer);
+    state.updateTimer = null;
+  }
   if (state.settings.updateCheck === false || !state.settings.updateRepo) return;
-  const last = Number(state.settings.updateLastCheck) || 0;
-  if (Date.now() - last < 24 * 60 * 60 * 1000) return;
   checkForUpdate({ silent: true });
+  state.updateTimer = window.setInterval(() => {
+    if (state.settings.updateCheck === false || !state.settings.updateRepo) return;
+    checkForUpdate({ silent: true });
+  }, UPDATE_RECHECK_MS);
 }
 
 function cacheElements() {
@@ -2775,6 +2813,7 @@ function applyProviderToForm(provider, { fillServers = true, revealAdvanced = tr
   }
   els.accountHint.textContent = provider.hint || '';
   els.accountPasswordLabel.textContent = provider.passwordLabel || '密码或授权码';
+  if (!state.editingAccountId) els.accountPassword.placeholder = provider.passwordLabel || '密码或授权码';
   els.accountHelp.hidden = !provider.helpUrl;
   els.accountHelp.textContent = provider.helpLabel || '查看获取方式';
   els.accountHelp.dataset.url = provider.helpUrl || '';
