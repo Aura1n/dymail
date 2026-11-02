@@ -360,6 +360,11 @@ function uids(value) {
   return result;
 }
 
+/* Batch move/delete sends a uid list; the single-message calls still send one uid. */
+function uidList(value) {
+  return Array.isArray(value) && value.length ? uids(value) : undefined;
+}
+
 function registerIpc() {
   handle('app:info', () => ({
     version: app.getVersion(),
@@ -532,6 +537,7 @@ function registerIpc() {
       accountId: text(payload.accountId, 100),
       path: text(payload.path, 1024),
       uid: payload.uid,
+      uids: uidList(payload.uids),
       target: payload.target
     })
   );
@@ -540,7 +546,8 @@ function registerIpc() {
     mail.deletePermanent({
       accountId: text(payload.accountId, 100),
       path: text(payload.path, 1024),
-      uid: payload.uid
+      uid: payload.uid,
+      uids: uidList(payload.uids)
     })
   );
 

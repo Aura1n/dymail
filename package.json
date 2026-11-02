@@ -1,7 +1,7 @@
 {
   "name": "dymail",
   "productName": "Dymail",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Unified desktop mail client",
   "main": "src/main/main.js",
   "author": "Dymail",

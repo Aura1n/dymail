@@ -951,7 +951,15 @@ function groupCheckedByMailbox(messages) {
 
 /* One call per account + folder, and folders of different accounts run at the
    same time because they use different connections. Returns one error string
-   per failed folder. */
+   per failed folder, named so the user can tell which mailbox was affected. */
+function mailboxLabel(group) {
+  const account = accountById(group.accountId);
+  const folder = ((account && account.folders) || []).find((item) => item.path === group.path);
+  const name = (folder && folder.name) || String(group.path || '').split('/').pop() || '该文件夹';
+  const owner = account ? account.email || account.name || '' : '';
+  return owner ? `${owner} 的 ${name}` : name;
+}
+
 async function forEachMailboxGroup(messages, run) {
   const groups = groupCheckedByMailbox(messages);
   const failed = [];
@@ -965,7 +973,7 @@ async function forEachMailboxGroup(messages, run) {
       try {
         await run(group, uids);
       } catch (err) {
-        failed.push(err && err.message ? err.message : '操作失败');
+        failed.push(`${mailboxLabel(group)}：${err && err.message ? err.message : '操作失败'}`);
       }
     }
   }
