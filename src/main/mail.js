@@ -698,6 +698,20 @@ class MailService {
     return folders.find((folder) => folder.role === role) || null;
   }
 
+  /* QQ, Gmail and most Chinese providers expose no archive folder at all, so the
+     first archive on such an account creates one instead of failing; the unified
+     归档 view in the sidebar then picks it up on the next folder sync. */
+  async _createArchiveFolder(client, account, session) {
+    const name = '归档';
+    try {
+      await client.mailboxCreate(name);
+    } catch (err) {
+      throw new Error(`该账户没有归档文件夹，服务器也拒绝新建（${friendlyError(err, '')}）`);
+    }
+    const created = await this._findFolder(client, account, session, 'archive', true);
+    return created || { role: 'archive', path: name, name, delimiter: '/' };
+  }
+
   async move({ accountId, path: mailboxPath, uid, uids, target }) {
     if (!['trash', 'archive'].includes(target)) throw new Error('目标文件夹无效');
     const range = uidSet(uid, uids);
@@ -705,6 +719,7 @@ class MailService {
       const client = await this._connect(account, session);
       let folder = await this._findFolder(client, account, session, target, false);
       if (!folder) folder = await this._findFolder(client, account, session, target, true);
+      if (!folder && target === 'archive') folder = await this._createArchiveFolder(client, account, session);
       if (!folder) {
         throw new Error(target === 'trash' ? '该账户没有已删除文件夹' : '该账户没有归档文件夹');
       }
