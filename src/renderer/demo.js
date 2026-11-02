@@ -611,10 +611,17 @@ function makeId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+function bumpPatch(version) {
+  const parts = String(version).split('.');
+  parts[2] = String(Number(parts[2] || 0) + 1);
+  return parts.join('.');
+}
+
 export function createDemoApi() {
+  const realInfo = window.dymail.app.info();
   return {
     app: {
-      info: async () => ({ version: '1.3.0', platform: 'win32', packaged: false }),
+      info: () => realInfo,
       open: async (url) => {
         demoOpened.push(String(url || ''));
         return true;
@@ -1109,9 +1116,10 @@ export function createDemoApi() {
       check: async () => {
         await wait(400);
         if (!settings.updateRepo) throw new Error('未配置更新源，请填写 owner/repo');
+        const current = (await realInfo).version;
         return {
-          current: '1.3.0',
-          latest: '1.3.1',
+          current,
+          latest: bumpPatch(current),
           hasUpdate: true,
           notes: '· 已删除邮件可还原到收件箱，超过设定天数的自动彻底删除\n· 批量操作合并为单条 IMAP 命令，账户没有归档文件夹时自动创建\n· 阅读页可一键把英文正文翻译成中文',
           url: `https://github.com/${settings.updateRepo}/releases/latest`,
