@@ -28,6 +28,8 @@ const paths = {
   refresh:
     '<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 20v-4h-4"/>',
   checkAll: '<path d="m3 12.5 4 4L16 7.5"/><path d="m12.5 16.5 1.5 1.5L23 8.5"/>',
+  selectAll:
+    '<rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><path d="m8 12.3 2.9 2.9 5.4-5.7"/>',
   'unread-dot':
     '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v9a2.5 2.5 0 0 1-2.5 2.5h-7L6 21v-3h.5A2.5 2.5 0 0 1 4 15.5v-9Z"/><circle cx="16.5" cy="7.5" r="2.2" fill="currentColor" stroke="none"/>',
   paperclip:
@@ -43,6 +45,9 @@ const paths = {
   underline: '<path d="M7 4v7a5 5 0 0 0 10 0V4"/><path d="M5 20h14"/>',
   list: '<path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4.5" cy="6" r=".8" fill="currentColor"/><circle cx="4.5" cy="12" r=".8" fill="currentColor"/><circle cx="4.5" cy="18" r=".8" fill="currentColor"/>',
   warning: '<path d="M12 4 3 20h18L12 4Z"/><path d="M12 9.5v4.5M12 17.5h.01"/>',
+  contacts: '<circle cx="12" cy="8.2" r="3.4"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/>',
+  translate:
+    '<path d="M2.6 18.6 6.1 7.7h.9l3.5 10.9"/><path d="M3.9 14.8h5.3"/><path d="M13.4 10.4h7.2"/><path d="M17 7.6v2.8"/><path d="M14.6 13.3c1.4 2.9 3.3 4.7 5.7 5.6"/><path d="M20.3 13.3c-1.4 2.9-3.3 4.7-5.7 5.6"/>',
   'image-off':
     '<path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5v-13Z"/><path d="m4 16 5-5 4 4 2-2 5 5"/><circle cx="15" cy="8.5" r="1.3"/><path d="m3 3 18 18"/>',
   'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>'

@@ -152,12 +152,22 @@ const state = {
   globalSyncError: null,
   filterUnread: false,
   selectedKey: null,
+  checked: new Set(),
+  lastCheckKey: null,
+  contacts: [],
+  editingContact: null,
+  contactPickField: null,
   reader: null,
   readerLoading: false,
   readerError: null,
   readerRetry: null,
   readerAllowRemote: false,
   readerHasRemote: false,
+  readerDocument: '',
+  readerTranslated: false,
+  readerTranslating: false,
+  readerTranslation: null,
+  deeplKeyTouched: false,
   drafts: [],
   search: null,
   searchTimer: null,
@@ -211,6 +221,7 @@ async function init() {
   state.loading = true;
   renderList();
   renderReaderEmpty('选择邮件');
+  loadContacts();
 
   await loadBaseAccounts();
   scheduleUpdateCheck();
@@ -233,6 +244,7 @@ function cacheElements() {
     'reader-empty-text', 'reader-empty-action', 'reader-view', 'reader-subject', 'reader-avatar',
     'reader-from', 'reader-address', 'reader-date', 'reader-recipients', 'action-star', 'action-unread',
     'action-reply', 'action-reply-all', 'action-forward', 'action-archive', 'action-trash', 'remote-banner',
+    'action-translate', 'deepl-key-input', 'deepl-key-state',
     'show-images', 'reader-attachments', 'mail-frame', 'reader-loading', 'account-dialog', 'account-form',
     'account-title', 'account-email', 'account-name', 'account-provider', 'account-password', 'account-eye',
     'account-password-label', 'account-password-warn', 'account-help',
@@ -246,7 +258,11 @@ function cacheElements() {
     'compose-save', 'toast', 'block-remote-input', 'notify-input', 'tray-input', 'update-check-input',
     'update-repo-input', 'update-version', 'update-skipped', 'update-reset-skip', 'update-check-now',
     'update-note', 'update-dialog', 'update-from', 'update-to', 'update-notes', 'update-ignore',
-    'update-later', 'update-download'
+    'update-later', 'update-download', 'batch-bar', 'batch-count', 'batch-star', 'batch-unstar',
+    'batch-read', 'batch-unread', 'batch-archive', 'batch-trash', 'batch-clear', 'contacts-dialog',
+    'contacts-list', 'contact-form', 'contact-name', 'contact-email', 'contact-error', 'contact-new',
+    'contact-delete', 'contact-submit', 'contact-pop', 'contact-search', 'contact-pop-list',
+    'select-all'
   ];
   for (const id of ids) {
     const key = id.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -461,6 +477,8 @@ function normalizeView(view) {
   if (!state.accounts.length) return null;
   if (!view) return defaultView();
   if (view.kind === 'unified') return state.accounts.length >= 2 ? { kind: 'unified' } : defaultView();
+  if (view.kind === 'starred') return { kind: 'starred' };
+  if (view.kind === 'archived') return { kind: 'archived' };
   if (view.kind === 'drafts') {
     const account = accountById(view.accountId);
     return account ? { kind: 'drafts', accountId: account.id } : defaultView();
@@ -501,6 +519,8 @@ function sameView(a, b) {
 function viewLabel(view) {
   if (!view) return '邮件';
   if (view.kind === 'unified') return '全部收件箱';
+  if (view.kind === 'starred') return '星标';
+  if (view.kind === 'archived') return '归档';
   if (view.kind === 'drafts') return '草稿';
   if (view.kind === 'folder') return ROLE_LABELS[view.role] || view.label || '邮件';
   return '邮件';
@@ -524,6 +544,7 @@ function navigate(view) {
   resetSearchUI(true);
   state.view = next;
   state.selectedKey = null;
+  clearChecks();
   clearReader();
   writeUi();
   renderSidebar();
@@ -567,17 +588,38 @@ function renderSidebar() {
     return;
   }
   const parts = [];
+  const group = [];
   if (state.accounts.length >= 2) {
     const count = unifiedUnseen();
     const active = state.view.kind === 'unified';
-    parts.push(`
-      <button type="button" class="nav-row nav-unified${active ? ' is-active' : ''}" data-nav="unified">
+    group.push(`
+      <button type="button" class="nav-row${active ? ' is-active' : ''}" data-nav="unified">
         <span class="nav-icon">${icon('inbox')}</span>
         <span class="nav-label">全部收件箱</span>
         ${count ? `<span class="nav-count">${count}</span>` : ''}
       </button>
     `);
   }
+  group.push(`
+    <button type="button" class="nav-row${state.view.kind === 'starred' ? ' is-active' : ''}" data-nav="starred">
+      <span class="nav-icon">${icon('star')}</span>
+      <span class="nav-label">星标</span>
+    </button>
+  `);
+  group.push(`
+    <button type="button" class="nav-row${state.view.kind === 'archived' ? ' is-active' : ''}" data-nav="archived">
+      <span class="nav-icon">${icon('archive')}</span>
+      <span class="nav-label">归档</span>
+    </button>
+  `);
+  group.push(`
+    <button type="button" class="nav-row nav-unified" data-nav="contacts">
+      <span class="nav-icon">${icon('contacts')}</span>
+      <span class="nav-label">联系人</span>
+      ${state.contacts.length ? `<span class="nav-count">${state.contacts.length}</span>` : ''}
+    </button>
+  `);
+  parts.push(group.join(''));
 
   for (const account of state.accounts) {
     const expanded = state.expanded[account.id] !== false;
@@ -682,6 +724,7 @@ function renderHeader() {
   els.filterUnread.hidden = noAccounts || (state.view.kind === 'drafts' && !state.search);
   els.filterUnread.classList.toggle('is-on', state.filterUnread);
   els.filterUnread.setAttribute('aria-pressed', String(state.filterUnread));
+  els.selectAll.hidden = noAccounts || state.view.kind === 'drafts';
   els.markAllRead.hidden = noAccounts || Boolean(state.search) || state.view.kind !== 'folder';
   els.refreshBtn.hidden = noAccounts;
 }
@@ -716,6 +759,7 @@ function renderList({ preserveScroll = false } = {}) {
 
   els.messageList.innerHTML = html;
   els.messageList.scrollTop = scrollTop;
+  updateBatchBar();
 }
 
 function emptyListHtml(iconName, text, actionLabel = '', actionAttr = '') {
@@ -743,11 +787,18 @@ function skeletonHtml() {
 function renderMessageRow(message) {
   const key = messageKey(message);
   const selected = state.selectedKey === key;
-  const showAccount = (state.view.kind === 'unified' || Boolean(state.search)) && state.accounts.length > 1;
+  const checked = state.checked.has(key);
+  const showAccount =
+    (state.view.kind === 'unified' ||
+      state.view.kind === 'starred' ||
+      state.view.kind === 'archived' ||
+      Boolean(state.search)) &&
+    state.accounts.length > 1;
   const color = safeColor(message.accountColor || (accountById(message.accountId) || {}).color);
   const name = senderName(message);
-  return `<div class="msg-row${message.seen ? '' : ' is-unread'}${selected ? ' is-selected' : ''}" data-key="${escapeHtml(key)}" role="option" aria-selected="${selected}">
+  return `<div class="msg-row${message.seen ? '' : ' is-unread'}${selected ? ' is-selected' : ''}${checked ? ' is-checked' : ''}" data-key="${escapeHtml(key)}" role="option" aria-selected="${selected}">
     <span class="unread-mark"></span>
+    <input type="checkbox" class="msg-check" data-check="${escapeHtml(key)}"${checked ? ' checked' : ''} tabindex="-1" aria-label="选择邮件">
     <span class="msg-avatar" style="${avatarStyle(color)}">${escapeHtml(initialOf(name))}</span>
     <div class="msg-main">
       <div class="msg-line">
@@ -790,7 +841,7 @@ function updateFooter() {
     !state.loading &&
     !state.listError &&
     state.view.kind !== 'drafts' &&
-    (state.view.kind === 'unified'
+    (state.view.kind === 'unified' || state.view.kind === 'starred' || state.view.kind === 'archived'
       ? Object.values(state.messagesCursors || {}).some((cursor) => cursor != null)
       : state.messagesCursor != null);
   els.listFoot.hidden = !canLoad;
@@ -820,8 +871,235 @@ function updateListBanner() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Multi-select & batch actions                                       */
+/* ------------------------------------------------------------------ */
+
+function updateBatchBar() {
+  if (state.checked.size) {
+    const alive = new Set(state.messages.map(messageKey));
+    for (const key of [...state.checked]) {
+      if (!alive.has(key)) state.checked.delete(key);
+    }
+  }
+  const count = state.checked.size;
+  els.batchBar.hidden = count === 0;
+  els.batchArchive.hidden = state.view.kind === 'archived';
+  els.messageList.classList.toggle('batch-on', count > 0);
+  if (count) els.batchCount.textContent = `已选 ${count} 封`;
+  const rows = visibleMessages();
+  const allChecked = rows.length > 0 && rows.every((message) => state.checked.has(messageKey(message)));
+  els.selectAll.classList.toggle('is-on', allChecked);
+  els.selectAll.title = allChecked ? '取消全选' : '全选';
+}
+
+function clearChecks() {
+  if (!state.checked.size) return;
+  state.checked.clear();
+  state.lastCheckKey = null;
+  updateBatchBar();
+}
+
+function toggleCheck(key, { shift = false } = {}) {
+  const list = visibleMessages();
+  const index = list.findIndex((message) => messageKey(message) === key);
+  if (index < 0) return;
+  const lastIndex = list.findIndex((message) => messageKey(message) === state.lastCheckKey);
+  if (shift && lastIndex >= 0) {
+    const [from, to] = lastIndex < index ? [lastIndex, index] : [index, lastIndex];
+    for (let i = from; i <= to; i += 1) state.checked.add(messageKey(list[i]));
+  } else if (state.checked.has(key)) {
+    state.checked.delete(key);
+  } else {
+    state.checked.add(key);
+  }
+  state.lastCheckKey = key;
+  renderList({ preserveScroll: true });
+}
+
+/* One click selects every row on screen; clicking again clears the selection. */
+function toggleSelectAll() {
+  const list = visibleMessages();
+  if (!list.length) return;
+  const allChecked = list.every((message) => state.checked.has(messageKey(message)));
+  state.checked.clear();
+  if (!allChecked) {
+    for (const message of list) state.checked.add(messageKey(message));
+  }
+  state.lastCheckKey = null;
+  renderList({ preserveScroll: true });
+}
+
+function checkedMessages() {
+  if (!state.checked.size) return [];
+  return state.messages.filter((message) => state.checked.has(messageKey(message)));
+}
+
+/* One IMAP SELECT per account + folder, so a batch costs as few round-trips as possible. */
+function groupCheckedByMailbox(messages) {
+  const groups = new Map();
+  for (const message of messages) {
+    const key = `${message.accountId}|${message.path}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { accountId: message.accountId, path: message.path, messages: [] };
+      groups.set(key, group);
+    }
+    group.messages.push(message);
+  }
+  return [...groups.values()];
+}
+
+/* One call per account + folder, and folders of different accounts run at the
+   same time because they use different connections. Returns one error string
+   per failed folder. */
+async function forEachMailboxGroup(messages, run) {
+  const groups = groupCheckedByMailbox(messages);
+  const failed = [];
+  let index = 0;
+  async function worker() {
+    while (index < groups.length) {
+      const group = groups[index];
+      index += 1;
+      const uids = group.messages.map((message) => Number(message.uid)).filter((uid) => uid > 0);
+      if (!uids.length) continue;
+      try {
+        await run(group, uids);
+      } catch (err) {
+        failed.push(err && err.message ? err.message : '操作失败');
+      }
+    }
+  }
+  const workers = [];
+  for (let i = 0; i < Math.min(3, groups.length); i += 1) workers.push(worker());
+  await Promise.all(workers);
+  return failed;
+}
+
+function setBatchBusy(busy) {
+  for (const button of [
+    els.batchStar,
+    els.batchUnstar,
+    els.batchRead,
+    els.batchUnread,
+    els.batchArchive,
+    els.batchTrash
+  ]) {
+    button.disabled = busy;
+  }
+}
+
+/* Flag bookkeeping for one message; the unread badge is refreshed once per
+   mailbox group, not once per row. */
+function applyFlagLocally(message, add, remove) {
+  if (add.includes('\\Flagged')) message.flagged = true;
+  if (remove.includes('\\Flagged')) message.flagged = false;
+  if (add.includes('\\Seen') && !message.seen) message.seen = true;
+  if (remove.includes('\\Seen') && message.seen) message.seen = false;
+}
+
+async function batchSetFlags(add, remove, label) {
+  const messages = checkedMessages();
+  if (!messages.length) return;
+  setBatchBusy(true);
+  const failed = await forEachMailboxGroup(messages, async (group, uids) => {
+    await api.mail.setFlags({ accountId: group.accountId, path: group.path, uids, add, remove });
+    let unseenDelta = 0;
+    for (const message of group.messages) {
+      if (add.includes('\\Seen') && !message.seen) unseenDelta -= 1;
+      if (remove.includes('\\Seen') && message.seen) unseenDelta += 1;
+      applyFlagLocally(message, add, remove);
+    }
+    if (unseenDelta) bumpUnseen(group.accountId, group.path, unseenDelta);
+  });
+  /* The starred view only ever contains flagged mail, so un-starring leaves the view. */
+  if (state.view.kind === 'starred' && remove.includes('\\Flagged')) {
+    state.messages = state.messages.filter((message) => message.flagged);
+  }
+  setBatchBusy(false);
+  renderList({ preserveScroll: true });
+  renderHeader();
+  toast(failed.length ? `${label}：${failed.length} 个文件夹失败（${failed[0]}）` : label);
+}
+
+function isInTrashFolder(message) {
+  const trash = folderOf(accountById(message.accountId), 'trash');
+  return Boolean(trash && message.path === trash.path);
+}
+
+/* Rows and unread badges move in one pass, so a batch never shows the counts
+   ticking down one message at a time. */
+function removeMessagesLocally(messages) {
+  const keys = new Set(messages.map((message) => messageKey(message)));
+  const dropped = new Map();
+  for (const message of messages) {
+    if (message.seen) continue;
+    const mapKey = message.accountId + '\u0000' + message.path;
+    const entry = dropped.get(mapKey) || { accountId: message.accountId, path: message.path, count: 0 };
+    entry.count += 1;
+    dropped.set(mapKey, entry);
+  }
+  state.messages = state.messages.filter((item) => !keys.has(messageKey(item)));
+  for (const key of keys) state.checked.delete(key);
+  for (const entry of dropped.values()) bumpUnseen(entry.accountId, entry.path, -entry.count);
+  if (state.selectedKey && keys.has(state.selectedKey)) {
+    state.selectedKey = null;
+    clearReader();
+  }
+}
+
+async function batchMove(target, label) {
+  const messages = checkedMessages();
+  if (!messages.length) return;
+  const permanent = target === 'trash' ? messages.filter(isInTrashFolder) : [];
+  if (permanent.length) {
+    const confirmed = await api.dialog.confirm({
+      title: '永久删除',
+      message:
+        permanent.length === messages.length
+          ? `永久删除这 ${messages.length} 封邮件？`
+          : `${permanent.length} 封邮件已在已删除文件夹中，将被永久删除。`,
+      confirmLabel: '删除',
+      cancelLabel: '取消',
+      danger: true
+    });
+    if (!confirmed) return;
+  }
+  setBatchBusy(true);
+  els.batchCount.textContent = `正在处理 ${messages.length} 封…`;
+  let doneFolders = 0;
+  const failed = await forEachMailboxGroup(messages, async (group, uids) => {
+    if (isInTrashFolder(group.messages[0])) {
+      await api.mail.deletePermanent({ accountId: group.accountId, path: group.path, uids });
+    } else {
+      await api.mail.move({ accountId: group.accountId, path: group.path, uids, target });
+    }
+    removeMessagesLocally(group.messages);
+    doneFolders += 1;
+  });
+  setBatchBusy(false);
+  state.lastCheckKey = null;
+  renderList({ preserveScroll: true });
+  renderHeader();
+  updateFooter();
+  toast(failed.length ? `${label}：${failed.length} 个文件夹失败（${failed[0]}）` : label);
+  if (doneFolders) {
+    window.setTimeout(() => {
+      refreshAccounts({ manual: false });
+    }, 1400);
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Loading mail                                                       */
 /* ------------------------------------------------------------------ */
+
+/* Unified, starred and archived all page with one cursor per account. */
+function pagedView() {
+  if (state.view.kind === 'unified') return api.mail.listUnified;
+  if (state.view.kind === 'starred') return api.mail.listStarred;
+  if (state.view.kind === 'archived') return api.mail.listArchived;
+  return null;
+}
 
 async function loadView({ preserveReader = false, keepScroll = false } = {}) {
   if (!state.accounts.length) {
@@ -862,8 +1140,9 @@ async function loadView({ preserveReader = false, keepScroll = false } = {}) {
       return;
     }
 
-    if (state.view.kind === 'unified') {
-      const data = await api.mail.listUnified({ limit: PAGE_SIZE });
+    const paged = pagedView();
+    if (paged) {
+      const data = await paged({ limit: PAGE_SIZE });
       if (token !== state.loadToken) return;
       state.messages = data.messages || [];
       state.messagesCursors = data.cursors || {};
@@ -906,8 +1185,9 @@ async function loadMore() {
   updateFooter();
   try {
     let incoming = [];
-    if (state.view.kind === 'unified') {
-      const data = await api.mail.listUnified({
+    const paged = pagedView();
+    if (paged) {
+      const data = await paged({
         cursors: state.messagesCursors,
         limit: PAGE_SIZE
       });
@@ -961,8 +1241,9 @@ async function silentReloadList() {
   }
   const token = state.loadToken;
   try {
-    if (state.view.kind === 'unified') {
-      const data = await api.mail.listUnified({ limit: PAGE_SIZE });
+    const paged = pagedView();
+    if (paged) {
+      const data = await paged({ limit: PAGE_SIZE });
       if (token !== state.loadToken || state.search) return;
       state.messages = data.messages || [];
       state.messagesCursors = data.cursors || {};
@@ -1264,6 +1545,160 @@ async function setReaderDocument(documentText) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Body translation                                                   */
+/* ------------------------------------------------------------------ */
+
+const TRANSLATE_PIECE = 450;
+/* The free service has a small daily quota, so a single email only sends the
+   first screen or two of text and the rest is left as-is. */
+const TRANSLATE_CHARS = 6000;
+const SKIP_TRANSLATE_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSRIPT', 'TEXTAREA', 'TITLE', 'HEAD', 'IFRAME']);
+
+function collectTextNodes(doc) {
+  const nodes = [];
+  if (!doc.body) return nodes;
+  const walk = (parent) => {
+    for (const child of parent.childNodes) {
+      if (child.nodeType === 3) {
+        if (child.data.trim() && !SKIP_TRANSLATE_TAGS.has(child.parentElement ? child.parentElement.tagName : '')) {
+          nodes.push(child);
+        }
+      } else if (child.nodeType === 1 && !SKIP_TRANSLATE_TAGS.has(child.tagName)) {
+        walk(child);
+      }
+    }
+  };
+  walk(doc.body);
+  return nodes;
+}
+
+/* One request per piece keeps the free service inside its size limit; pieces
+   of the same node are stitched back together after translation. */
+function splitPiece(text, limit) {
+  if (text.length <= limit) return [text];
+  const parts = text.match(/[^.!?\n]+[.!?]*\n*|\n+/g) || [text];
+  const pieces = [];
+  let current = '';
+  for (const part of parts) {
+    if (current && current.length + part.length > limit) {
+      pieces.push(current);
+      current = part;
+    } else {
+      current += part;
+    }
+  }
+  if (current) pieces.push(current);
+  return pieces;
+}
+
+function planTranslation(doc) {
+  const entries = [];
+  let used = 0;
+  let truncated = false;
+  for (const node of collectTextNodes(doc)) {
+    const pieces = splitPiece(node.data, TRANSLATE_PIECE);
+    for (let index = 0; index < pieces.length; index += 1) {
+      const piece = pieces[index];
+      const core = piece.trim();
+      if (core && used + core.length > TRANSLATE_CHARS) {
+        truncated = true;
+        /* Keep the tail as an untranslated entry so the body is never shortened. */
+        entries.push({ node, piece: pieces.slice(index).join(''), core: '' });
+        break;
+      }
+      if (core) used += core.length;
+      entries.push({ node, piece, core });
+    }
+  }
+  return { entries, segments: entries.filter((entry) => entry.core).map((entry) => entry.core), truncated };
+}
+
+function applyTranslation(entries, translated) {
+  const chunks = new Map();
+  let cursor = 0;
+  let done = 0;
+  for (const entry of entries) {
+    let text = entry.piece;
+    if (entry.core) {
+      const value = String(translated[cursor] || '').trim();
+      cursor += 1;
+      if (value) {
+        const lead = entry.piece.slice(0, entry.piece.length - entry.piece.trimStart().length);
+        const trail = entry.piece.slice(entry.piece.trimEnd().length);
+        text = `${lead}${value}${trail}`;
+        done += 1;
+      }
+    }
+    chunks.set(entry.node, (chunks.get(entry.node) || '') + text);
+  }
+  for (const [node, text] of chunks) node.data = text;
+  return done;
+}
+
+function cjkRatio(text) {
+  const eastern = (text.match(/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/g) || []).length;
+  const latin = (text.match(/[A-Za-z]/g) || []).length;
+  const total = eastern + latin;
+  return total ? eastern / total : 0;
+}
+
+async function toggleTranslate() {
+  if (state.readerTranslating) return;
+  const data = state.reader;
+  if (!data) return;
+  const key = messageKey(data);
+
+  if (state.readerTranslated) {
+    state.readerTranslated = false;
+    setReaderDocument(state.readerDocument);
+    updateReaderButtons();
+    return;
+  }
+  if (state.readerTranslation && state.readerTranslation.key === key) {
+    state.readerTranslated = true;
+    setReaderDocument(state.readerTranslation.document);
+    updateReaderButtons();
+    return;
+  }
+
+  let doc;
+  try {
+    doc = new DOMParser().parseFromString(state.readerDocument, 'text/html');
+  } catch {
+    return;
+  }
+  const plan = planTranslation(doc);
+  if (!plan.segments.length) {
+    toast('没有可翻译的正文');
+    return;
+  }
+  if (cjkRatio(plan.segments.join(' ')) > 0.2) {
+    toast('正文已是中文');
+    return;
+  }
+
+  state.readerTranslating = true;
+  updateReaderButtons();
+  toast('正在翻译正文…');
+  try {
+    const result = await api.translate.segments(plan.segments);
+    const done = applyTranslation(plan.entries, (result && result.translated) || []);
+    if (!done) throw new Error((result && result.notice) || '翻译服务没有返回内容');
+    const document = `<!DOCTYPE html>${doc.documentElement.outerHTML}`;
+    state.readerTranslation = { key, document };
+    state.readerTranslated = true;
+    setReaderDocument(document);
+    const tail = plan.truncated ? '（正文过长，只翻译了前面部分）' : '';
+    toast(result.notice ? `${result.notice}${tail}` : `已翻译成中文${result.provider === 'deepl' ? '（DeepL）' : ''}${tail}`);
+  } catch (err) {
+    toast(err && err.message ? err.message : '翻译失败');
+  } finally {
+    state.readerTranslating = false;
+    updateReaderButtons();
+  }
+}
+
 function clearReader() {
   state.reader = null;
   state.readerLoading = false;
@@ -1271,6 +1706,10 @@ function clearReader() {
   state.readerRetry = null;
   state.readerAllowRemote = false;
   state.readerHasRemote = false;
+  state.readerDocument = '';
+  state.readerTranslated = false;
+  state.readerTranslating = false;
+  state.readerTranslation = null;
   state.readToken += 1;
   clearReaderFrame();
   renderReaderEmpty('选择邮件');
@@ -1350,6 +1789,11 @@ async function selectMessage(message, { force = false } = {}) {
 function renderReader() {
   const data = state.reader;
   if (!data) return;
+  if (state.readerTranslation && state.readerTranslation.key !== messageKey(data)) {
+    state.readerTranslation = null;
+    state.readerTranslated = false;
+    state.readerTranslating = false;
+  }
   renderedTheme = resolvedTheme();
   els.readerEmpty.hidden = true;
   els.readerView.hidden = false;
@@ -1387,7 +1831,9 @@ function renderReader() {
     });
     state.readerHasRemote = built.hasRemote;
     els.remoteBanner.hidden = !blockRemote || !built.hasRemote || state.readerAllowRemote;
-    setReaderDocument(built.document);
+    state.readerDocument = built.document;
+    /* Repainting for a theme or flag change keeps a finished translation. */
+    setReaderDocument(state.readerTranslated ? state.readerTranslation.document : built.document);
   } catch (err) {
     console.error(err);
     state.readerHasRemote = false;
@@ -1407,6 +1853,14 @@ function updateReaderButtons() {
   els.actionStar.classList.toggle('star-on', flagged);
   els.actionStar.title = flagged ? '取消星标' : '星标';
   els.actionUnread.title = data.seen ? '标为未读' : '标为已读';
+
+  els.actionTranslate.disabled = state.readerTranslating;
+  els.actionTranslate.classList.toggle('is-on', state.readerTranslated);
+  els.actionTranslate.title = state.readerTranslating
+    ? '正在翻译…'
+    : state.readerTranslated
+      ? '显示原文'
+      : '翻译正文';
 
   const account = accountById(data.accountId);
   const archive = folderOf(account, 'archive');
@@ -2064,6 +2518,7 @@ function hideComposeUi() {
   const compose = state.compose;
   if (compose && compose.autosaveTimer) clearTimeout(compose.autosaveTimer);
   state.compose = null;
+  closeContactPicker();
   els.composeLayer.hidden = true;
   els.composeEditor.innerHTML = '';
   els.composeAttachments.innerHTML = '';
@@ -2490,7 +2945,24 @@ function fillGeneralSettings() {
   els.blockRemoteInput.checked = state.settings.remoteImages === 'block';
   els.notifyInput.checked = state.settings.notifyNewMail !== false;
   els.trayInput.checked = state.settings.closeToTray !== false;
+  /* The saved key is a credential and never comes back to the renderer, so the
+     field stays empty and only shows whether one is already stored. */
+  els.deeplKeyInput.value = '';
+  state.deeplKeyTouched = false;
+  renderDeeplKeyState();
   els.generalNote.textContent = '';
+}
+
+function renderDeeplKeyState() {
+  const saved = Boolean(state.settings.hasDeeplKey);
+  const typed = els.deeplKeyInput.value.trim();
+  if (typed) {
+    els.deeplKeyState.textContent = '保存后将优先使用 DeepL 翻译';
+    return;
+  }
+  els.deeplKeyState.textContent = saved
+    ? '已保存密钥，翻译时优先使用 DeepL；在此清空可改用免费翻译'
+    : '未设置，使用免费翻译服务';
 }
 
 async function saveGeneralSettings() {
@@ -2503,6 +2975,12 @@ async function saveGeneralSettings() {
       notifyNewMail: els.notifyInput.checked,
       closeToTray: els.trayInput.checked
     });
+    if (state.deeplKeyTouched) {
+      state.settings = await api.settings.setDeeplKey(els.deeplKeyInput.value);
+      state.deeplKeyTouched = false;
+      els.deeplKeyInput.value = '';
+    }
+    renderDeeplKeyState();
     rememberUnseen();
     if (state.reader) renderReader();
     scheduleRefresh();
@@ -2714,6 +3192,183 @@ function moveSelection(delta) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Contacts                                                           */
+/* ------------------------------------------------------------------ */
+
+async function loadContacts() {
+  try {
+    const rows = await api.contacts.list();
+    state.contacts = Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    console.error(err);
+    state.contacts = [];
+  }
+  renderSidebar();
+}
+
+function filteredContacts(query) {
+  const text = String(query || '').trim().toLowerCase();
+  if (!text) return state.contacts;
+  return state.contacts.filter(
+    (contact) =>
+      String(contact.email || '').toLowerCase().includes(text) ||
+      String(contact.name || '').toLowerCase().includes(text)
+  );
+}
+
+function contactError(message) {
+  const text = String(message || '');
+  els.contactError.textContent = text;
+  els.contactError.hidden = !text;
+}
+
+function renderContactsList() {
+  const selected = state.editingContact ? state.editingContact.email : '';
+  els.contactsList.innerHTML = state.contacts.length
+    ? state.contacts
+        .map(
+          (contact) => `<button type="button" class="contact-row${contact.email === selected ? ' is-active' : ''}" data-contact="${escapeHtml(contact.email)}">
+            <span class="msg-avatar" style="${avatarStyle('#7d8590')}">${escapeHtml(initialOf(contact.name || contact.email))}</span>
+            <span class="contact-row-text">
+              <span class="contact-row-name">${escapeHtml(contact.name || contact.email)}</span>
+              ${contact.name ? `<span class="contact-row-email">${escapeHtml(contact.email)}</span>` : ''}
+            </span>
+          </button>`
+        )
+        .join('')
+    : '<p class="contacts-empty">还没有联系人</p>';
+}
+
+function showContactForm(contact) {
+  state.editingContact = contact ? { name: contact.name, email: contact.email } : null;
+  els.contactName.value = contact ? contact.name || '' : '';
+  els.contactEmail.value = contact ? contact.email : '';
+  els.contactDelete.hidden = !contact;
+  els.contactSubmit.textContent = contact ? '保存' : '添加';
+  contactError('');
+  renderContactsList();
+}
+
+function openContactsDialog() {
+  showContactForm(state.contacts[0] || null);
+  if (!els.contactsDialog.open) els.contactsDialog.showModal();
+  els.contactName.focus();
+}
+
+async function submitContactForm() {
+  const name = els.contactName.value.trim();
+  const email = els.contactEmail.value.trim();
+  if (!email) {
+    contactError('请填写邮箱地址');
+    return;
+  }
+  els.contactSubmit.disabled = true;
+  try {
+    const saved = await api.contacts.save({
+      name,
+      email,
+      originalEmail: state.editingContact ? state.editingContact.email : ''
+    });
+    await loadContacts();
+    showContactForm(state.contacts.find((item) => item.email === saved.email) || saved);
+  } catch (err) {
+    contactError(err && err.message ? err.message : '保存失败');
+  } finally {
+    els.contactSubmit.disabled = false;
+  }
+}
+
+async function removeCurrentContact() {
+  if (!state.editingContact) return;
+  const email = state.editingContact.email;
+  const confirmed = await api.dialog.confirm({
+    title: '删除联系人',
+    message: `删除联系人 ${email}？`,
+    confirmLabel: '删除',
+    cancelLabel: '取消',
+    danger: true
+  });
+  if (!confirmed) return;
+  try {
+    await api.contacts.remove({ email });
+    await loadContacts();
+    showContactForm(state.contacts[0] || null);
+  } catch (err) {
+    contactError(err && err.message ? err.message : '删除失败');
+  }
+}
+
+function closeContactPicker() {
+  state.contactPickField = null;
+  els.contactPop.hidden = true;
+  els.contactSearch.value = '';
+}
+
+function renderContactPickList(query) {
+  const list = filteredContacts(query);
+  els.contactPopList.innerHTML = list.length
+    ? list
+        .map(
+          (contact) => `<button type="button" class="contact-pop-item" data-pick-contact="${escapeHtml(contact.email)}">
+            <span class="contact-row-name">${escapeHtml(contact.name || contact.email)}</span>
+            ${contact.name ? `<span class="contact-row-email">${escapeHtml(contact.email)}</span>` : ''}
+          </button>`
+        )
+        .join('')
+    : '<p class="contacts-empty">没有匹配的联系人，可直接在地址栏输入</p>';
+}
+
+function openContactPicker(field, line) {
+  if (state.contactPickField === field && !els.contactPop.hidden) {
+    closeContactPicker();
+    return;
+  }
+  state.contactPickField = field;
+  renderContactPickList('');
+  const box = els.contactPop.parentElement;
+  const input = line.querySelector('input');
+  const anchorLeft = input ? input.offsetLeft : line.offsetLeft;
+  const left = Math.max(0, Math.min(anchorLeft, box.clientWidth - 302));
+  els.contactPop.style.left = `${left}px`;
+  els.contactPop.style.top = `${line.offsetTop + line.offsetHeight + 2}px`;
+  els.contactPop.hidden = false;
+  els.contactSearch.value = '';
+  els.contactSearch.focus();
+}
+
+function composeFieldFor(name) {
+  if (name === 'cc') return els.composeCc;
+  if (name === 'bcc') return els.composeBcc;
+  return els.composeTo;
+}
+
+/* The part before `<` is display text, so compare the real address. */
+function addressOfPart(part) {
+  const match = /<([^>]+)>/.exec(part);
+  return String(match ? match[1] : part).trim().toLowerCase();
+}
+
+function insertPickedContact(email) {
+  const field = composeFieldFor(state.contactPickField);
+  const contact = state.contacts.find((item) => item.email === email);
+  if (!field || !contact) return;
+  const current = field.value.trim();
+  const already = current
+    .split(',')
+    .some((part) => addressOfPart(part) === contact.email.toLowerCase());
+  if (!already) {
+    const label = contact.name && contact.name !== contact.email ? `${contact.name} <${contact.email}>` : contact.email;
+    field.value = current ? `${current.replace(/[,;]\s*$/, '')}, ${label}` : label;
+    if (state.compose) {
+      state.compose.dirty = true;
+      scheduleAutosave();
+    }
+  }
+  closeContactPicker();
+  field.focus();
+}
+
+/* ------------------------------------------------------------------ */
 /* Events                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -2773,10 +3428,38 @@ function bindEvents() {
 
   els.markAllRead.addEventListener('click', markAllRead);
 
+  els.selectAll.addEventListener('click', toggleSelectAll);
+
+  els.batchStar.addEventListener('click', () => batchSetFlags(['\\Flagged'], [], '已加星标'));
+  els.batchUnstar.addEventListener('click', () => batchSetFlags([], ['\\Flagged'], '已取消星标'));
+  els.batchRead.addEventListener('click', () => batchSetFlags(['\\Seen'], [], '已标为已读'));
+  els.batchUnread.addEventListener('click', () => batchSetFlags([], ['\\Seen'], '已标为未读'));
+  els.batchArchive.addEventListener('click', () => batchMove('archive', '已归档'));
+  els.batchTrash.addEventListener('click', () => batchMove('trash', '已删除'));
+  els.batchClear.addEventListener('click', () => {
+    clearChecks();
+    renderList({ preserveScroll: true });
+  });
+
   els.sidebarNav.addEventListener('click', (event) => {
     const unified = event.target.closest('[data-nav="unified"]');
     if (unified) {
       navigate({ kind: 'unified' });
+      return;
+    }
+    const starred = event.target.closest('[data-nav="starred"]');
+    if (starred) {
+      navigate({ kind: 'starred' });
+      return;
+    }
+    const archived = event.target.closest('[data-nav="archived"]');
+    if (archived) {
+      navigate({ kind: 'archived' });
+      return;
+    }
+    const contacts = event.target.closest('[data-nav="contacts"]');
+    if (contacts) {
+      openContactsDialog();
       return;
     }
     const toggle = event.target.closest('[data-account-toggle]');
@@ -2828,6 +3511,12 @@ function bindEvents() {
     }
     const row = event.target.closest('[data-key]');
     if (!row) return;
+    const check = event.target.closest('[data-check]');
+    if (check) {
+      event.preventDefault();
+      toggleCheck(check.dataset.check, { shift: event.shiftKey });
+      return;
+    }
     const message = state.messages.find((item) => messageKey(item) === row.dataset.key);
     if (message) selectMessage(message);
   });
@@ -2854,6 +3543,7 @@ function bindEvents() {
 
   els.actionStar.addEventListener('click', toggleStar);
   els.actionUnread.addEventListener('click', toggleUnread);
+  els.actionTranslate.addEventListener('click', toggleTranslate);
   els.actionReply.addEventListener('click', () => composeFromReader('reply'));
   els.actionReplyAll.addEventListener('click', () => composeFromReader('replyAll'));
   els.actionForward.addEventListener('click', () => composeFromReader('forward'));
@@ -2883,6 +3573,7 @@ function bindEvents() {
 
   bindAccountDialog();
   bindSettingsDialog();
+  bindContactsDialog();
   bindCompose();
   bindKeyboard();
 }
@@ -2947,6 +3638,10 @@ function bindSettingsDialog() {
   }
   els.settingsAddAccount.addEventListener('click', () => openAccountDialog());
   els.generalSave.addEventListener('click', saveGeneralSettings);
+  els.deeplKeyInput.addEventListener('input', () => {
+    state.deeplKeyTouched = true;
+    renderDeeplKeyState();
+  });
   els.updateCheckNow.addEventListener('click', () => checkForUpdate());
   els.updateCheckInput.addEventListener('change', saveUpdateSettings);
   els.updateRepoInput.addEventListener('change', saveUpdateSettings);
@@ -2976,6 +3671,27 @@ function bindSettingsDialog() {
     if (remove) {
       await removeAccountById(remove.dataset.removeAccount);
     }
+  });
+}
+
+function bindContactsDialog() {
+  for (const button of document.querySelectorAll('[data-close="contacts"]')) {
+    button.addEventListener('click', () => els.contactsDialog.close());
+  }
+  els.contactsList.addEventListener('click', (event) => {
+    const row = event.target.closest('[data-contact]');
+    if (!row) return;
+    showContactForm(state.contacts.find((item) => item.email === row.dataset.contact) || null);
+    els.contactName.focus();
+  });
+  els.contactNew.addEventListener('click', () => {
+    showContactForm(null);
+    els.contactName.focus();
+  });
+  els.contactDelete.addEventListener('click', removeCurrentContact);
+  els.contactForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitContactForm();
   });
 }
 
@@ -3029,6 +3745,38 @@ function bindCompose() {
     renderComposeAttachments();
     scheduleAutosave();
   });
+
+  for (const button of document.querySelectorAll('.contact-pick')) {
+    button.addEventListener('click', () => {
+      if (!state.compose) return;
+      openContactPicker(button.dataset.pick, button.closest('.compose-line'));
+    });
+  }
+  els.contactSearch.addEventListener('input', () => renderContactPickList(els.contactSearch.value));
+  els.contactSearch.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      const field = composeFieldFor(state.contactPickField);
+      closeContactPicker();
+      field.focus();
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const first = els.contactPopList.querySelector('[data-pick-contact]');
+      if (first) insertPickedContact(first.dataset.pickContact);
+    }
+  });
+  els.contactPopList.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-pick-contact]');
+    if (item) insertPickedContact(item.dataset.pickContact);
+  });
+  els.compose.addEventListener('click', (event) => {
+    if (els.contactPop.hidden) return;
+    if (event.target.closest('.contact-pop') || event.target.closest('.contact-pick')) return;
+    closeContactPicker();
+  });
 }
 
 function updateComposeToolbar() {
@@ -3049,6 +3797,12 @@ function bindKeyboard() {
     if (state.compose) {
       if (event.key === 'Escape') {
         event.preventDefault();
+        if (!els.contactPop.hidden) {
+          const field = composeFieldFor(state.contactPickField);
+          closeContactPicker();
+          field.focus();
+          return;
+        }
         closeCompose();
       } else if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         event.preventDefault();
@@ -3067,6 +3821,10 @@ function bindKeyboard() {
       if (state.search) {
         event.preventDefault();
         clearSearch();
+      } else if (state.checked.size) {
+        event.preventDefault();
+        clearChecks();
+        renderList({ preserveScroll: true });
       } else if (event.target === els.searchInput) {
         els.searchInput.blur();
       }

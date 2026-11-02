@@ -4,4 +4,5 @@ release*/
 installer/
 scripts/icon-out/
 .verify/
+tmp/
 *.log

@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('dymail', {
   mail: {
     list: (payload) => call('mail:list', payload),
     listUnified: (payload) => call('mail:list-unified', payload),
+    listStarred: (payload) => call('mail:list-starred', payload),
+    listArchived: (payload) => call('mail:list-archived', payload),
     search: (payload) => call('mail:search', payload),
     read: (payload) => call('mail:read', payload),
     document: (document) => call('mail:document', { document }),
@@ -48,12 +50,21 @@ contextBridge.exposeInMainWorld('dymail', {
     save: (payload) => call('drafts:save', payload),
     remove: (id) => call('drafts:remove', { id })
   },
+  contacts: {
+    list: () => call('contacts:list'),
+    save: (payload) => call('contacts:save', payload),
+    remove: (payload) => call('contacts:remove', payload)
+  },
   files: {
     pick: () => call('files:pick')
   },
   settings: {
     get: () => call('settings:get'),
-    update: (patch) => call('settings:update', patch)
+    update: (patch) => call('settings:update', patch),
+    setDeeplKey: (key) => call('settings:set-deepl-key', { key })
+  },
+  translate: {
+    segments: (segments) => call('translate:segments', { segments })
   },
   dialog: {
     confirm: (payload) => call('dialog:confirm', payload)

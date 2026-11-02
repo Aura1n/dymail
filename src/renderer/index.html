@@ -52,6 +52,9 @@
             <span class="view-count" id="view-count"></span>
           </div>
           <div class="list-tools">
+            <button type="button" class="icon-btn" id="select-all" title="全选" aria-label="全选">
+              <span data-icon="selectAll"></span>
+            </button>
             <button type="button" class="icon-btn" id="filter-unread" title="只看未读" aria-pressed="false">
               <span data-icon="unread-dot"></span>
             </button>
@@ -63,6 +66,18 @@
             </button>
           </div>
         </header>
+        <div class="batch-bar" id="batch-bar" hidden>
+          <span class="batch-count" id="batch-count">已选 0 封</span>
+          <span class="action-divider"></span>
+          <button type="button" class="icon-btn" id="batch-star" title="加星标"><span data-icon="star"></span></button>
+          <button type="button" class="icon-btn" id="batch-unstar" title="取消星标"><span data-icon="star-filled"></span></button>
+          <button type="button" class="icon-btn" id="batch-read" title="标为已读"><span data-icon="checkAll"></span></button>
+          <button type="button" class="icon-btn" id="batch-unread" title="标为未读"><span data-icon="unread-dot"></span></button>
+          <button type="button" class="icon-btn" id="batch-archive" title="归档"><span data-icon="archive"></span></button>
+          <button type="button" class="icon-btn" id="batch-trash" title="删除"><span data-icon="trash"></span></button>
+          <span class="spacer"></span>
+          <button type="button" class="link-btn" id="batch-clear">取消选择</button>
+        </div>
         <div class="list-banner" id="list-banner" hidden>
           <span data-icon="warning"></span>
           <span class="list-banner-text" id="list-banner-text"></span>
@@ -101,6 +116,9 @@
                 </button>
                 <button type="button" class="icon-btn" id="action-unread" title="标为未读">
                   <span data-icon="unread-dot"></span>
+                </button>
+                <button type="button" class="icon-btn" id="action-translate" title="翻译正文">
+                  <span data-icon="translate"></span>
                 </button>
                 <button type="button" class="icon-btn" id="action-reply" title="回复">
                   <span data-icon="reply"></span>
@@ -199,6 +217,38 @@
     </form>
   </dialog>
 
+  <dialog class="sheet contacts-sheet" id="contacts-dialog">
+    <div class="contacts-layout">
+      <div class="contacts-side">
+        <header class="dialog-head">
+          <h2>联系人</h2>
+          <button type="button" class="icon-btn" data-close="contacts" title="关闭"><span data-icon="close"></span></button>
+        </header>
+        <div class="contacts-list" id="contacts-list"></div>
+        <footer class="contacts-side-foot">
+          <button type="button" class="btn" id="contact-new">新建</button>
+        </footer>
+      </div>
+      <form class="contacts-form" id="contact-form" novalidate>
+        <label class="field">
+          <span class="field-label">姓名</span>
+          <input id="contact-name" type="text" autocomplete="off">
+        </label>
+        <label class="field">
+          <span class="field-label">邮箱地址</span>
+          <input id="contact-email" type="text" inputmode="email" autocomplete="off" spellcheck="false">
+        </label>
+        <p class="field-hint">联系人保存在 %APPDATA%\Dymail\contacts.json，可直接编辑该文件。</p>
+        <p class="form-error" id="contact-error" hidden></p>
+        <footer class="dialog-foot">
+          <button type="button" class="btn danger-ghost" id="contact-delete" hidden>删除</button>
+          <span class="spacer"></span>
+          <button type="submit" class="btn primary" id="contact-submit">保存</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+
   <dialog class="sheet settings-sheet" id="settings-dialog">
     <div class="settings-layout">
       <nav class="settings-nav">
@@ -244,8 +294,13 @@
               <span class="switch"><input type="checkbox" id="tray-input"><span></span></span>
             </label>
             <label class="setting-block">
+              <span class="setting-label">DeepL 密钥（可选）</span>
+              <input id="deepl-key-input" type="password" placeholder="留空则使用免费翻译服务" spellcheck="false" autocomplete="off">
+              <span class="setting-sub" id="deepl-key-state"></span>
+            </label>
+            <label class="setting-block">
               <span class="setting-label">签名</span>
-              <textarea id="signature-input" rows="7" spellcheck="true"></textarea>
+              <textarea id="signature-input" rows="5" spellcheck="true"></textarea>
             </label>
           </div>
           <footer class="settings-foot">
@@ -336,20 +391,27 @@
         <div class="compose-line">
           <span class="compose-label">收件人</span>
           <input id="compose-to" type="text" autocomplete="off" spellcheck="false">
+          <button type="button" class="icon-btn contact-pick" data-pick="to" title="选择联系人"><span data-icon="contacts"></span></button>
           <button type="button" class="link-btn" id="toggle-cc">抄送</button>
           <button type="button" class="link-btn" id="toggle-bcc">密送</button>
         </div>
         <div class="compose-line" id="compose-cc-line" hidden>
           <span class="compose-label">抄送</span>
           <input id="compose-cc" type="text" autocomplete="off" spellcheck="false">
+          <button type="button" class="icon-btn contact-pick" data-pick="cc" title="选择联系人"><span data-icon="contacts"></span></button>
         </div>
         <div class="compose-line" id="compose-bcc-line" hidden>
           <span class="compose-label">密送</span>
           <input id="compose-bcc" type="text" autocomplete="off" spellcheck="false">
+          <button type="button" class="icon-btn contact-pick" data-pick="bcc" title="选择联系人"><span data-icon="contacts"></span></button>
         </div>
         <div class="compose-line">
           <span class="compose-label">主题</span>
           <input id="compose-subject" type="text" autocomplete="off">
+        </div>
+        <div class="contact-pop" id="contact-pop" hidden>
+          <input id="contact-search" type="text" placeholder="搜索联系人" autocomplete="off" spellcheck="false">
+          <div class="contact-pop-list" id="contact-pop-list"></div>
         </div>
       </div>
       <div class="compose-toolbar">

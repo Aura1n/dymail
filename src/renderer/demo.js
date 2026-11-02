@@ -127,6 +127,7 @@ const boxes = {
         from: { name: 'Figma', address: 'notifications@figma.com' },
         to: [{ name: '林辰', address: 'lin.chen@outlook.com' }],
         date: days(1),
+        flagged: true,
         html: `<p><strong>周谨</strong> 在 <em>Settings / v3</em> 中回复了你：</p>
           <img src="https://images.unsplash.com/photo-1558655146-9f40138edfeb?w=720&q=80" alt="" width="560" style="border-radius:8px">
           <p>“账户区块的间距再收紧一点，和左侧导航对齐。” </p>
@@ -254,6 +255,7 @@ const boxes = {
         to: [{ name: 'Lin Chen', address: 'linchen@gmail.com' }],
         date: days(1),
         seen: true,
+        flagged: true,
         html: `<p>A payout of <strong>$1,842.60</strong> was sent to your bank account.</p>
           <p style="color:#777;font-size:12px">Expected arrival: 2 business days</p>`,
         text: 'A payout of $1,842.60 was sent to your bank account. Expected arrival: 2 business days.'
@@ -323,6 +325,7 @@ const boxes = {
         from: { name: '阿里云', address: 'message@aliyun.com' },
         to: [{ name: '林辰', address: 'lin.chen@qq.com' }],
         date: days(2),
+        flagged: true,
         html: `<p>您有 1 台 ECS 实例将在 7 天后到期。</p>
           <p>实例：i-2ze8x9k3<br>地域：华东 1（杭州）<br>到期时间：11 月 8 日</p>
           <p><a href="https://www.aliyun.com/">前往控制台续费</a></p>`,
@@ -424,10 +427,28 @@ const drafts = [
   }
 ];
 
+const demoContacts = [
+  { name: '王婷', email: 'wangting@northwind.cn' },
+  { name: '李昂', email: 'liang@northwind.cn' },
+  { name: '周谨', email: 'zhoujin@northwind.cn' },
+  { name: '陈老师', email: 'chen@university.edu.cn' }
+];
+
 const demoOpened = [];
 const demoNotifications = [];
 const demoAccountSaves = [];
-window.dymailDemoCalls = { opened: demoOpened, notifications: demoNotifications, accountSaves: demoAccountSaves };
+const demoDeeplKeys = [];
+const demoMoves = [];
+const demoDeletes = [];
+window.dymailDemoCalls = {
+  opened: demoOpened,
+  notifications: demoNotifications,
+  accountSaves: demoAccountSaves,
+  contacts: demoContacts,
+  deeplKeys: demoDeeplKeys,
+  moves: demoMoves,
+  deletes: demoDeletes
+};
 
 const settings = {
   theme: 'system',
@@ -439,7 +460,8 @@ const settings = {
   updateCheck: true,
   updateRepo: 'Aura1n/dymail',
   updateSkipped: '',
-  updateLastCheck: 0
+  updateLastCheck: 0,
+  hasDeeplKey: false
 };
 
 function findAccount(accountId) {
@@ -631,6 +653,44 @@ export function createDemoApi() {
         return { messages: merged, cursors: next, errors: [] };
       },
 
+      listStarred: async ({ cursors, limit }) => {
+        await wait(120);
+        const size = Math.max(1, Number(limit) || 40);
+        const merged = [];
+        const next = {};
+        for (const account of accounts) {
+          const list = sortMessages(
+            ((boxes[account.id] && boxes[account.id].inbox) || []).filter((item) => item.flagged)
+          );
+          const offset = Math.max(0, Number(cursors && cursors[account.id]) || 0);
+          const slice = list.slice(offset, offset + size);
+          for (const item of slice) {
+            merged.push(summary(account, FOLDER_PATHS.inbox, item));
+          }
+          next[account.id] = offset + slice.length < list.length ? offset + slice.length : null;
+        }
+        merged.sort((a, b) => b.timestamp - a.timestamp || b.uid - a.uid);
+        return { messages: merged, cursors: next, errors: [] };
+      },
+
+      listArchived: async ({ cursors, limit }) => {
+        await wait(120);
+        const size = Math.max(1, Number(limit) || 40);
+        const merged = [];
+        const next = {};
+        for (const account of accounts) {
+          const list = sortMessages((boxes[account.id] && boxes[account.id].archive) || []);
+          const offset = Math.max(0, Number(cursors && cursors[account.id]) || 0);
+          const slice = list.slice(offset, offset + size);
+          for (const item of slice) {
+            merged.push(summary(account, FOLDER_PATHS.archive, item));
+          }
+          next[account.id] = offset + slice.length < list.length ? offset + slice.length : null;
+        }
+        merged.sort((a, b) => b.timestamp - a.timestamp || b.uid - a.uid);
+        return { messages: merged, cursors: next, errors: [] };
+      },
+
       search: async ({ accountId, path, query }) => {
         await wait(180);
         const needle = String(query || '').toLowerCase();
@@ -730,26 +790,34 @@ export function createDemoApi() {
         return true;
       },
 
-      move: async ({ accountId, path, uid, target }) => {
+      move: async ({ accountId, path, uid, uids, target }) => {
         await wait(180);
         const source = folderMessages(accountId, path);
         const targetPath = FOLDER_PATHS[target];
         const destination = targetPath ? folderMessages(accountId, targetPath) : null;
         if (!source || !destination) throw new Error('文件夹不存在');
-        const index = source.findIndex((item) => item.uid === Number(uid));
-        if (index < 0) throw new Error('邮件不存在');
-        const [item] = source.splice(index, 1);
-        destination.push(item);
+        /* Mirrors the real client: a whole uid set moves with one command. */
+        const wanted = new Set((uids && uids.length ? uids : [uid]).map(Number));
+        const moving = source.filter((item) => wanted.has(Number(item.uid)));
+        if (!moving.length) throw new Error('邮件不存在');
+        demoMoves.push({ target, count: moving.length });
+        for (let i = source.length - 1; i >= 0; i -= 1) {
+          if (wanted.has(Number(source[i].uid))) destination.push(source.splice(i, 1)[0]);
+        }
         return true;
       },
 
-      deletePermanent: async ({ accountId, path, uid }) => {
+      deletePermanent: async ({ accountId, path, uid, uids }) => {
         await wait(160);
         const list = folderMessages(accountId, path);
         if (!list) throw new Error('文件夹不存在');
-        const index = list.findIndex((item) => item.uid === Number(uid));
-        if (index < 0) throw new Error('邮件不存在');
-        list.splice(index, 1);
+        const wanted = new Set((uids && uids.length ? uids : [uid]).map(Number));
+        const removed = list.filter((item) => wanted.has(Number(item.uid)));
+        if (!removed.length) throw new Error('邮件不存在');
+        demoDeletes.push(removed.length);
+        for (let i = list.length - 1; i >= 0; i -= 1) {
+          if (wanted.has(Number(list[i].uid))) list.splice(i, 1);
+        }
         return true;
       },
 
@@ -850,6 +918,38 @@ export function createDemoApi() {
       }
     },
 
+    contacts: {
+      list: async () => {
+        await wait(60);
+        return demoContacts
+          .slice()
+          .sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email, 'zh-Hans-CN'));
+      },
+
+      save: async ({ name, email, originalEmail }) => {
+        await wait(80);
+        const address = String(email || '').trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new Error('联系人邮箱格式不正确');
+        const record = { name: String(name || '').trim() || address, email: address };
+        const original = String(originalEmail || '').toLowerCase();
+        let index = original ? demoContacts.findIndex((item) => item.email.toLowerCase() === original) : -1;
+        if (index < 0 && demoContacts.some((item) => item.email.toLowerCase() === address.toLowerCase())) {
+          throw new Error('该联系人已存在');
+        }
+        if (index >= 0) demoContacts[index] = record;
+        else demoContacts.push(record);
+        return record;
+      },
+
+      remove: async ({ email }) => {
+        await wait(60);
+        const target = String(email || '').toLowerCase();
+        const index = demoContacts.findIndex((item) => item.email.toLowerCase() === target);
+        if (index >= 0) demoContacts.splice(index, 1);
+        return true;
+      }
+    },
+
     files: {
       pick: async () => [
         { path: 'C:\\Users\\Public\\Documents\\预算模板.xlsx', name: '预算模板.xlsx', size: 28672 }
@@ -878,6 +978,22 @@ export function createDemoApi() {
           if (Number.isFinite(Number(payload.updateLastCheck))) settings.updateLastCheck = Number(payload.updateLastCheck);
         }
         return { ...settings };
+      },
+      /* Mirrors the real store: the key is a credential, so only its presence is reported back. */
+      setDeeplKey: async (key) => {
+        const value = String(key == null ? '' : key).trim();
+        demoDeeplKeys.push(value);
+        settings.hasDeeplKey = Boolean(value);
+        return { ...settings };
+      }
+    },
+
+    translate: {
+      segments: async (segments) => {
+        if (window.dymail && window.dymail.translate && typeof window.dymail.translate.segments === 'function') {
+          return window.dymail.translate.segments(segments);
+        }
+        return { translated: (segments || []).map(() => ''), provider: 'none', notice: '演示环境没有连接翻译服务' };
       }
     },
 
@@ -889,7 +1005,7 @@ export function createDemoApi() {
           current: '1.1.1',
           latest: '1.2.0',
           hasUpdate: true,
-          notes: '· Gmail 账户改用应用专用密码指引\n· 阅读页窄屏自适应',
+          notes: '· 邮件列表支持多选、一键全选与批量星标、已读、归档、删除\n· 新增全部星标与归档视图、本地联系人\n· 阅读页可一键把英文正文翻译成中文',
           url: `https://github.com/${settings.updateRepo}/releases/latest`,
           page: `https://github.com/${settings.updateRepo}/releases`,
           checkedAt: Date.now()

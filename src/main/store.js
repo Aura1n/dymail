@@ -19,7 +19,8 @@ const DEFAULT_SETTINGS = {
   updateCheck: true,
   updateRepo: DEFAULT_UPDATE_REPO,
   updateSkipped: '',
-  updateLastCheck: 0
+  updateLastCheck: 0,
+  deeplKey: ''
 };
 
 function sanitizeFileName(name) {
@@ -55,6 +56,7 @@ class Store {
   constructor() {
     this.dir = app.getPath('userData');
     this.file = path.join(this.dir, 'dymail.json');
+    this.contactsFile = path.join(this.dir, 'contacts.json');
     this.draftsDir = path.join(this.dir, 'drafts');
     fs.mkdirSync(this.draftsDir, { recursive: true });
     this.data = this._load();
@@ -113,7 +115,34 @@ class Store {
   }
 
   getSettings() {
-    return { ...this.data.settings };
+    const { deeplKey, ...rest } = this.data.settings;
+    return { ...rest, hasDeeplKey: Boolean(deeplKey) };
+  }
+
+  /* The translation key is a credential, so it is stored like the account
+     passwords and never handed to the renderer. */
+  setDeeplKey(key) {
+    const value = String(key == null ? '' : key).trim().slice(0, 200);
+    const next = { ...this.data.settings };
+    if (!value) {
+      next.deeplKey = '';
+    } else {
+      if (!safeStorage.isEncryptionAvailable()) throw new Error('系统加密服务不可用，无法保存密钥');
+      next.deeplKey = this._encrypt(value);
+    }
+    this.data.settings = next;
+    this._persist();
+    return { hasDeeplKey: Boolean(next.deeplKey) };
+  }
+
+  getDeeplKey() {
+    const encoded = this.data.settings && this.data.settings.deeplKey;
+    if (!encoded) return '';
+    try {
+      return this._decrypt(encoded);
+    } catch {
+      return '';
+    }
   }
 
   updateSettings(patch) {
@@ -137,7 +166,7 @@ class Store {
     }
     this.data.settings = next;
     this._persist();
-    return { ...next };
+    return this.getSettings();
   }
 
   getWindowBounds() {
@@ -394,6 +423,74 @@ class Store {
         await fsp.rm(path.join(this.draftsDir, draft.id), { recursive: true, force: true });
       } catch {}
     }
+  }
+
+  /* Contacts live in their own plain-text file so they can be edited outside
+     the app; they are re-read on every request rather than cached. */
+  _readContacts() {
+    let raw;
+    try {
+      raw = fs.readFileSync(this.contactsFile, 'utf8');
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return [];
+      throw new Error('无法读取联系人文件');
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(`联系人文件不是合法 JSON，请检查 ${this.contactsFile}`);
+    }
+    const list = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.contacts) ? parsed.contacts : null;
+    if (!list) throw new Error('联系人文件应是一个数组');
+    return list
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => ({
+        name: cleanText(item.name, 120).trim(),
+        email: cleanText(item.email, 320).trim()
+      }))
+      .filter((item) => item.email);
+  }
+
+  _writeContacts(list) {
+    fs.mkdirSync(this.dir, { recursive: true });
+    const tmp = `${this.contactsFile}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify(list, null, 2)}\n`, 'utf8');
+    fs.renameSync(tmp, this.contactsFile);
+  }
+
+  listContacts() {
+    return this._readContacts().sort((a, b) => {
+      const left = (a.name || a.email).localeCompare(b.name || b.email, 'zh-Hans-CN');
+      return left || a.email.localeCompare(b.email);
+    });
+  }
+
+  saveContact(input) {
+    const name = cleanText(input && input.name, 120).trim();
+    const email = cleanText(input && input.email, 320).trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('联系人邮箱格式不正确');
+    const original = cleanText(input && input.originalEmail, 320).trim().toLowerCase();
+    const list = this._readContacts();
+    const index = original ? list.findIndex((item) => item.email.toLowerCase() === original) : -1;
+    if (index < 0 && list.some((item) => item.email.toLowerCase() === email.toLowerCase())) {
+      throw new Error('该联系人已存在');
+    }
+    const record = { name: name || email, email };
+    if (index >= 0) list[index] = record;
+    else list.push(record);
+    this._writeContacts(list);
+    return record;
+  }
+
+  deleteContact(email) {
+    const target = cleanText(email, 320).trim().toLowerCase();
+    if (!target) return false;
+    const list = this._readContacts();
+    const next = list.filter((item) => item.email.toLowerCase() !== target);
+    if (next.length === list.length) return false;
+    this._writeContacts(next);
+    return true;
   }
 }
 

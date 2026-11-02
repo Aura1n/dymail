@@ -19,6 +19,7 @@ const {
 } = require('electron');
 const { Store } = require('./store');
 const { MailService } = require('./mail');
+const { translateSegments } = require('./translate');
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -481,6 +482,16 @@ function registerIpc() {
     return mail.listUnified({ cursors, limit: payload.limit });
   });
 
+  handle('mail:list-starred', (payload) => {
+    const cursors = payload.cursors && typeof payload.cursors === 'object' ? payload.cursors : null;
+    return mail.listStarred({ cursors, limit: payload.limit });
+  });
+
+  handle('mail:list-archived', (payload) => {
+    const cursors = payload.cursors && typeof payload.cursors === 'object' ? payload.cursors : null;
+    return mail.listArchived({ cursors, limit: payload.limit });
+  });
+
   handle('mail:search', (payload) => {
     const accountId = payload.accountId ? text(payload.accountId, 100) : null;
     const mailboxPath = payload.path ? text(payload.path, 1024) : null;
@@ -578,6 +589,18 @@ function registerIpc() {
 
   handle('drafts:remove', (payload) => store.deleteDraft(text(payload.id, 100)));
 
+  handle('contacts:list', () => store.listContacts());
+
+  handle('contacts:save', (payload) =>
+    store.saveContact({
+      name: payload && payload.name != null ? String(payload.name) : '',
+      email: payload && payload.email != null ? String(payload.email) : '',
+      originalEmail: payload && payload.originalEmail ? String(payload.originalEmail) : ''
+    })
+  );
+
+  handle('contacts:remove', (payload) => store.deleteContact(payload && payload.email));
+
   handle('settings:get', () => store.getSettings());
 
   handle('settings:update', (payload) => {
@@ -587,6 +610,15 @@ function registerIpc() {
     syncTray();
     return settings;
   });
+
+  handle('settings:set-deepl-key', (payload) => {
+    const saved = store.setDeeplKey(payload && payload.key);
+    return { ...store.getSettings(), ...saved };
+  });
+
+  handle('translate:segments', (payload) =>
+    translateSegments(payload && payload.segments, { deeplKey: store.getDeeplKey() })
+  );
 
   handle('files:pick', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {

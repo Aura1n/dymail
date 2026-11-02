@@ -171,6 +171,16 @@ function compressUids(uids) {
   return parts.join(',');
 }
 
+/* Move and delete take either one uid or a whole batch, because a mailbox
+   selected with 50 checked mails should cost one IMAP command, not 50. */
+function uidSet(uid, uids) {
+  const list = Array.isArray(uids) && uids.length ? uids : [uid];
+  if (list.length > 500) throw new Error('一次最多操作 500 封邮件');
+  const range = compressUids(list);
+  if (!range) throw new Error('邮件不存在');
+  return range;
+}
+
 function compileMessage(options) {
   return new Promise((resolve, reject) => {
     const composer = new MailComposer(options);
@@ -476,7 +486,74 @@ class MailService {
     });
   }
 
-  async listUnified({ cursors, limit }) {
+  /* Aggregates one folder role across every account, newest first. Accounts
+     without that folder simply contribute nothing to the view. */
+  async listUnified({ cursors, limit, role }) {
+    const wantedRole = role || 'inbox';
+    const pageSize = this._clampLimit(limit);
+    const accounts = this.store.listAccounts();
+    const results = await Promise.allSettled(
+      accounts.map((account) =>
+        this._enqueue(account.id, async (acct, session) => {
+          const client = await this._connect(acct, session);
+          let folders = await this._loadFolders(acct, session, client, false);
+          let box = folders.find((folder) => folder.role === wantedRole);
+          if (!box && wantedRole !== 'inbox') {
+            folders = await this._loadFolders(acct, session, client, true);
+            box = folders.find((folder) => folder.role === wantedRole);
+          }
+          if (!box) {
+            if (wantedRole !== 'inbox') return { accountId: acct.id, messages: [], cursor: null };
+            throw new Error('未找到收件箱');
+          }
+          const mailbox = await this._ensureMailbox(client, box.path);
+          const exists = Number(mailbox.exists) || 0;
+          const cursorValue = cursors && Number(cursors[acct.id]) > 0 ? Number(cursors[acct.id]) : null;
+          if (!exists || (cursorValue != null && cursorValue < 1)) {
+            return { accountId: acct.id, messages: [], cursor: null };
+          }
+          const end = cursorValue ? Math.min(cursorValue, exists) : exists;
+          const start = Math.max(1, end - pageSize + 1);
+          const messages = await this._fetchRange(client, acct, box.path, start, end);
+          return {
+            accountId: acct.id,
+            messages,
+            cursor: start > 1 ? start - 1 : null
+          };
+        })
+      )
+    );
+    const messages = [];
+    const nextCursors = {};
+    const errors = [];
+    results.forEach((result, index) => {
+      const account = accounts[index];
+      if (result.status === 'fulfilled') {
+        messages.push(...result.value.messages);
+        nextCursors[account.id] = result.value.cursor;
+      } else {
+        nextCursors[account.id] = cursors && cursors[account.id] ? cursors[account.id] : null;
+        errors.push({
+          accountId: account.id,
+          accountEmail: account.email,
+          error: friendlyError(result.reason, '', account)
+        });
+      }
+    });
+    messages.sort((a, b) => b.timestamp - a.timestamp || b.seq - a.seq);
+    return { messages, cursors: nextCursors, errors };
+  }
+
+  // Archived mail is the Archive folder of every account, so it reuses the
+  // unified paging with a different role.
+  async listArchived(options) {
+    return this.listUnified({ ...options, role: 'archive' });
+  }
+
+  // Starred mail aggregates the flagged messages of every account inbox. The
+  // cursor is an index into each account's sorted UID list, so paging walks
+  // backwards through the mailboxes the same way listUnified does.
+  async listStarred({ cursors, limit }) {
     const pageSize = this._clampLimit(limit);
     const accounts = this.store.listAccounts();
     const results = await Promise.allSettled(
@@ -486,20 +563,25 @@ class MailService {
           const folders = await this._loadFolders(acct, session, client, false);
           const inbox = folders.find((folder) => folder.role === 'inbox');
           if (!inbox) throw new Error('未找到收件箱');
-          const mailbox = await this._ensureMailbox(client, inbox.path);
-          const exists = Number(mailbox.exists) || 0;
-          const cursorValue = cursors && Number(cursors[acct.id]) > 0 ? Number(cursors[acct.id]) : null;
-          if (!exists || (cursorValue != null && cursorValue < 1)) {
-            return { accountId: acct.id, messages: [], cursor: null };
+          await this._ensureMailbox(client, inbox.path);
+          const found = await client.search({ flagged: true }, { uid: true });
+          const uids = (Array.isArray(found) ? found : []).map(Number).filter((uid) => uid > 0).sort((a, b) => a - b);
+          const wanted = cursors && Number(cursors[acct.id]) > 0 ? Math.min(Number(cursors[acct.id]), uids.length) : uids.length;
+          if (wanted < 1) return { accountId: acct.id, messages: [], cursor: null };
+          const start = Math.max(1, wanted - pageSize + 1);
+          const range = compressUids(uids.slice(start - 1, wanted));
+          const messages = [];
+          if (range) {
+            for await (const msg of client.fetch(
+              range,
+              { uid: true, envelope: true, flags: true, internalDate: true },
+              { uid: true }
+            )) {
+              if (hasFlag(msg.flags, '\\Deleted')) continue;
+              messages.push(this._summary(acct, inbox.path, msg));
+            }
           }
-          const end = cursorValue ? Math.min(cursorValue, exists) : exists;
-          const start = Math.max(1, end - pageSize + 1);
-          const messages = await this._fetchRange(client, acct, inbox.path, start, end);
-          return {
-            accountId: acct.id,
-            messages,
-            cursor: start > 1 ? start - 1 : null
-          };
+          return { accountId: acct.id, messages, cursor: start > 1 ? start - 1 : null };
         })
       )
     );
@@ -616,10 +698,9 @@ class MailService {
     return folders.find((folder) => folder.role === role) || null;
   }
 
-  async move({ accountId, path: mailboxPath, uid, target }) {
+  async move({ accountId, path: mailboxPath, uid, uids, target }) {
     if (!['trash', 'archive'].includes(target)) throw new Error('目标文件夹无效');
-    const uidNumber = Number(uid);
-    if (!Number.isInteger(uidNumber) || uidNumber < 1) throw new Error('邮件不存在');
+    const range = uidSet(uid, uids);
     return this._enqueue(accountId, async (account, session) => {
       const client = await this._connect(account, session);
       let folder = await this._findFolder(client, account, session, target, false);
@@ -628,18 +709,17 @@ class MailService {
         throw new Error(target === 'trash' ? '该账户没有已删除文件夹' : '该账户没有归档文件夹');
       }
       await this._ensureMailbox(client, mailboxPath);
-      await client.messageMove(String(uidNumber), folder.path, { uid: true });
+      await client.messageMove(range, folder.path, { uid: true });
       return { path: folder.path };
     });
   }
 
-  async deletePermanent({ accountId, path: mailboxPath, uid }) {
-    const uidNumber = Number(uid);
-    if (!Number.isInteger(uidNumber) || uidNumber < 1) throw new Error('邮件不存在');
+  async deletePermanent({ accountId, path: mailboxPath, uid, uids }) {
+    const range = uidSet(uid, uids);
     return this._enqueue(accountId, async (account, session) => {
       const client = await this._connect(account, session);
       await this._ensureMailbox(client, mailboxPath);
-      await client.messageDelete(String(uidNumber), { uid: true });
+      await client.messageDelete(range, { uid: true });
       return true;
     });
   }
