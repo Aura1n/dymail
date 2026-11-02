@@ -9,6 +9,8 @@ const { app, safeStorage } = require('electron');
 const COLORS = ['#0a84ff', '#34a853', '#ff9f0a', '#e5484d', '#8e5cf7', '#00a3a3', '#d6409f', '#6b7280'];
 const DEFAULT_UPDATE_REPO = 'Aura1n/dymail';
 
+const TRASH_PURGE_STEPS = [0, 15, 30, 60, 90];
+
 const DEFAULT_SETTINGS = {
   theme: 'system',
   refreshSeconds: 60,
@@ -20,7 +22,9 @@ const DEFAULT_SETTINGS = {
   updateRepo: DEFAULT_UPDATE_REPO,
   updateSkipped: '',
   updateLastCheck: 0,
-  deeplKey: ''
+  deeplKey: '',
+  trashPurgeDays: 30,
+  trashPurgeAt: 0
 };
 
 function sanitizeFileName(name) {
@@ -164,9 +168,22 @@ class Store {
       if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('仓库格式应为 owner/repo');
       next.updateRepo = repo;
     }
+    if (patch && TRASH_PURGE_STEPS.includes(Number(patch.trashPurgeDays))) {
+      next.trashPurgeDays = Number(patch.trashPurgeDays);
+    }
     this.data.settings = next;
     this._persist();
     return this.getSettings();
+  }
+
+  /* When the trash was last emptied, so the automatic purge runs at most once a
+     day however often the app is opened or synced. */
+  markTrashPurged(at) {
+    const next = { ...this.data.settings };
+    next.trashPurgeAt = Math.max(0, Math.floor(Number(at) || 0));
+    this.data.settings = next;
+    this._persist();
+    return next.trashPurgeAt;
   }
 
   getWindowBounds() {

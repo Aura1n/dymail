@@ -150,6 +150,7 @@ const state = {
   listError: null,
   listErrors: [],
   globalSyncError: null,
+  purgeAttempted: false,
   filterUnread: false,
   selectedKey: null,
   checked: new Set(),
@@ -245,6 +246,7 @@ function cacheElements() {
     'reader-from', 'reader-address', 'reader-date', 'reader-recipients', 'action-star', 'action-unread',
     'action-reply', 'action-reply-all', 'action-forward', 'action-archive', 'action-trash', 'remote-banner',
     'action-translate', 'deepl-key-input', 'deepl-key-state',
+    'action-restore', 'batch-restore', 'trash-purge-select',
     'show-images', 'reader-attachments', 'mail-frame', 'reader-loading', 'account-dialog', 'account-form',
     'account-title', 'account-email', 'account-name', 'account-provider', 'account-password', 'account-eye',
     'account-password-label', 'account-password-warn', 'account-help',
@@ -884,6 +886,7 @@ function updateBatchBar() {
   const count = state.checked.size;
   els.batchBar.hidden = count === 0;
   els.batchArchive.hidden = state.view.kind === 'archived';
+  els.batchRestore.hidden = !viewIsTrash();
   els.messageList.classList.toggle('batch-on', count > 0);
   if (count) els.batchCount.textContent = `已选 ${count} 封`;
   const rows = visibleMessages();
@@ -989,6 +992,7 @@ function setBatchBusy(busy) {
     els.batchUnstar,
     els.batchRead,
     els.batchUnread,
+    els.batchRestore,
     els.batchArchive,
     els.batchTrash
   ]) {
@@ -1032,6 +1036,12 @@ async function batchSetFlags(add, remove, label) {
 function isInTrashFolder(message) {
   const trash = folderOf(accountById(message.accountId), 'trash');
   return Boolean(trash && message.path === trash.path);
+}
+
+/* 还原 only makes sense while browsing an account's 已删除 folder, which is the
+   one view where every row is known to sit in the trash. */
+function viewIsTrash() {
+  return state.view.kind === 'folder' && state.view.role === 'trash';
 }
 
 /* Rows and unread badges move in one pass, so a batch never shows the counts
@@ -1091,6 +1101,30 @@ async function batchMove(target, label) {
   updateFooter();
   toast(failed.length ? `${label}：${failed.length} 个文件夹失败（${failed[0]}）` : label);
   if (doneFolders) {
+    window.setTimeout(() => {
+      refreshAccounts({ manual: false });
+    }, 1400);
+  }
+}
+
+/* Restoring is the same batched shape as deleting: one MOVE per account folder
+   back into that account's inbox. */
+async function batchRestore() {
+  const messages = checkedMessages().filter(isInTrashFolder);
+  if (!messages.length) return;
+  setBatchBusy(true);
+  els.batchCount.textContent = `正在恢复 ${messages.length} 封…`;
+  const failed = await forEachMailboxGroup(messages, async (group, uids) => {
+    await api.mail.restore({ accountId: group.accountId, path: group.path, uids });
+    removeMessagesLocally(group.messages);
+  });
+  setBatchBusy(false);
+  state.lastCheckKey = null;
+  renderList({ preserveScroll: true });
+  renderHeader();
+  updateFooter();
+  toast(failed.length ? `还原：${failed.length} 个文件夹失败（${failed[0]}）` : `已还原 ${messages.length} 封到收件箱`);
+  if (messages.length > failed.length) {
     window.setTimeout(() => {
       refreshAccounts({ manual: false });
     }, 1400);
@@ -1317,6 +1351,25 @@ function refreshAccounts({ manual = false, force = false } = {}) {
   return startAccountSync(manual);
 }
 
+/* One trash sweep per session; the main process still caps it at about a day so
+   restarting the app does not re-scan every 已删除 folder. */
+async function maybePurgeTrash() {
+  if (state.purgeAttempted) return;
+  state.purgeAttempted = true;
+  let report = null;
+  try {
+    report = await api.mail.purgeTrash();
+  } catch {
+    return;
+  }
+  const total = report ? Number(report.total) : 0;
+  if (!total) return;
+  const failed = ((report && report.results) || []).filter((item) => item && item.error);
+  const text = `已彻底删除 ${total} 封 ${report.days} 天前的邮件`;
+  toast(failed.length ? `${text}（${failed.length} 个账户失败：${failed[0].error}）` : text);
+  if (viewIsTrash()) await loadView({ preserveReader: true, keepScroll: true });
+}
+
 function startAccountSync(manual) {
   if (!state.accounts.length) return Promise.resolve(false);
 
@@ -1336,6 +1389,7 @@ function startAccountSync(manual) {
       } else if (next && !sameView(next, state.view)) {
         state.view = next;
       }
+      maybePurgeTrash();
     } catch (err) {
       state.globalSyncError = err && err.message ? err.message : '同步失败';
       if (manual) toast(state.globalSyncError);
@@ -1878,6 +1932,7 @@ function updateReaderButtons() {
   const inTrash = trash && data.path === trash.path;
   els.actionTrash.disabled = !trash;
   els.actionTrash.title = inTrash ? '永久删除' : '删除';
+  els.actionRestore.hidden = !inTrash;
 }
 
 function renderAttachments(attachments) {
@@ -2019,6 +2074,26 @@ async function deleteCurrent() {
     return;
   }
   await moveCurrent('trash');
+}
+
+async function restoreCurrent() {
+  const data = state.reader;
+  if (!data) return;
+  els.actionRestore.disabled = true;
+  try {
+    await api.mail.restore({
+      accountId: data.accountId,
+      path: data.path,
+      uid: data.uid
+    });
+    afterMessageRemoved(data, 'inbox');
+    toast('已还原到收件箱');
+  } catch (err) {
+    toast(err && err.message ? err.message : '还原失败');
+    updateReaderButtons();
+  } finally {
+    els.actionRestore.disabled = false;
+  }
 }
 
 function afterMessageRemoved(data, target) {
@@ -2949,6 +3024,7 @@ function renderSettingsAccounts() {
 
 function fillGeneralSettings() {
   els.refreshSelect.value = String(state.settings.refreshSeconds);
+  els.trashPurgeSelect.value = String(Number(state.settings.trashPurgeDays) || 0);
   els.signatureInput.value = state.settings.signature || '';
   els.blockRemoteInput.checked = state.settings.remoteImages === 'block';
   els.notifyInput.checked = state.settings.notifyNewMail !== false;
@@ -2978,6 +3054,7 @@ async function saveGeneralSettings() {
   try {
     state.settings = await api.settings.update({
       refreshSeconds,
+      trashPurgeDays: Number(els.trashPurgeSelect.value),
       signature: els.signatureInput.value,
       remoteImages: els.blockRemoteInput.checked ? 'block' : 'allow',
       notifyNewMail: els.notifyInput.checked,
@@ -3443,6 +3520,7 @@ function bindEvents() {
   els.batchRead.addEventListener('click', () => batchSetFlags(['\\Seen'], [], '已标为已读'));
   els.batchUnread.addEventListener('click', () => batchSetFlags([], ['\\Seen'], '已标为未读'));
   els.batchArchive.addEventListener('click', () => batchMove('archive', '已归档'));
+  els.batchRestore.addEventListener('click', batchRestore);
   els.batchTrash.addEventListener('click', () => batchMove('trash', '已删除'));
   els.batchClear.addEventListener('click', () => {
     clearChecks();
@@ -3556,6 +3634,7 @@ function bindEvents() {
   els.actionReplyAll.addEventListener('click', () => composeFromReader('replyAll'));
   els.actionForward.addEventListener('click', () => composeFromReader('forward'));
   els.actionArchive.addEventListener('click', archiveCurrent);
+  els.actionRestore.addEventListener('click', restoreCurrent);
   els.actionTrash.addEventListener('click', deleteCurrent);
 
   els.readerAttachments.addEventListener('click', async (event) => {

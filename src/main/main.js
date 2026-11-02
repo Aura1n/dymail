@@ -46,6 +46,8 @@ const trayIconPath = path.join(__dirname, '../../assets/tray.png');
 
 const MAX_MAIL_DOCUMENTS = 16;
 const MAX_MAIL_DOCUMENT_BYTES = 40 * 1024 * 1024;
+/* How often the automatic trash sweep is allowed to run. */
+const PURGE_INTERVAL_MS = 20 * 60 * 60 * 1000;
 const mailDocuments = new Map();
 
 function rememberDocument(document) {
@@ -550,6 +552,30 @@ function registerIpc() {
       uids: uidList(payload.uids)
     })
   );
+
+  handle('mail:restore', (payload) =>
+    mail.restore({
+      accountId: text(payload.accountId, 100),
+      path: text(payload.path, 1024),
+      uid: payload.uid,
+      uids: uidList(payload.uids)
+    })
+  );
+
+  /* The renderer asks once per session; the store timestamp keeps it to about a
+     daily sweep so restarting the app does not re-scan every trash folder. */
+  handle('mail:purge-trash', async () => {
+    const settings = store.getSettings();
+    const days = Number(settings.trashPurgeDays);
+    if (!Number.isInteger(days) || days < 1) return { days: 0, total: 0, results: [], skipped: true };
+    if (Date.now() - (Number(settings.trashPurgeAt) || 0) < PURGE_INTERVAL_MS) {
+      return { days, total: 0, results: [], skipped: true };
+    }
+    store.markTrashPurged(Date.now());
+    const results = await mail.purgeTrash({ days });
+    const total = results.reduce((sum, item) => sum + (Number(item.removed) || 0), 0);
+    return { days, total, results };
+  });
 
   handle('mail:save-attachment', (payload) =>
     mail.saveAttachment({

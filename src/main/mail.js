@@ -13,6 +13,9 @@ const { sanitizeFileName } = require('./store');
 const ROLE_ORDER = ['inbox', 'sent', 'drafts', 'junk', 'trash', 'archive'];
 const MAX_MESSAGE_BYTES = 30 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+/* One UID EXPUNGE per chunk keeps the sequence set short enough for every
+   server's command length limit while still batching the delete. */
+const TRASH_PURGE_CHUNK = 200;
 const ALLOWED_FLAGS = new Set(['\\Seen', '\\Flagged', '\\Answered']);
 const SPECIAL_ROLES = {
   '\\inbox': 'inbox',
@@ -737,6 +740,79 @@ class MailService {
       await client.messageDelete(range, { uid: true });
       return true;
     });
+  }
+
+  /* 已删除 does not record where a message came from, so restoring means moving
+     it back to the inbox. The move can carry the deletion flag along, so it is
+     cleared on the copies the server reports back. */
+  async restore({ accountId, path: mailboxPath, uid, uids }) {
+    const range = uidSet(uid, uids);
+    return this._enqueue(accountId, async (account, session) => {
+      const client = await this._connect(account, session);
+      let inbox = await this._findFolder(client, account, session, 'inbox', false);
+      if (!inbox) inbox = await this._findFolder(client, account, session, 'inbox', true);
+      if (!inbox) throw new Error('该账户没有收件箱');
+      await this._ensureMailbox(client, mailboxPath);
+      const moved = await client.messageMove(range, inbox.path, { uid: true });
+      await this._ensureMailbox(client, inbox.path);
+      const landed = moved && moved.uidMap ? [...moved.uidMap.values()].map(Number) : [];
+      const flags = compressUids(landed);
+      if (flags) {
+        try {
+          await client.messageFlagsRemove(flags, ['\\Deleted'], { uid: true });
+        } catch {}
+      }
+      return { path: inbox.path };
+    });
+  }
+
+  /* Providers expire their trash on their own schedule (Gmail after 30 days,
+     QQ after 30, some never), so the app empties 已删除 itself: read the real
+     internal dates instead of trusting a server's BEFORE/OLDER quirks, then
+     expunge in chunks. */
+  async purgeTrash({ days }) {
+    const limit = Number(days);
+    if (!Number.isInteger(limit) || limit < 1) return [];
+    const cutoff = Date.now() - limit * 86400000;
+    const accounts = this.store.listAccounts();
+    const results = await Promise.allSettled(
+      accounts.map((account) =>
+        this._enqueue(account.id, async (acct, session) => {
+          const client = await this._connect(acct, session);
+          let trash = await this._findFolder(client, acct, session, 'trash', false);
+          if (!trash) trash = await this._findFolder(client, acct, session, 'trash', true);
+          if (!trash) return { accountId: acct.id, email: acct.email, removed: 0 };
+          const mailbox = await this._ensureMailbox(client, trash.path);
+          if (!Number(mailbox && mailbox.exists)) return { accountId: acct.id, email: acct.email, removed: 0 };
+          const stale = [];
+          for await (const msg of client.fetch('1:*', { uid: true, internalDate: true })) {
+            const at = msg.internalDate ? new Date(msg.internalDate).getTime() : 0;
+            const uid = Number(msg.uid);
+            if (at && at < cutoff && uid > 0) stale.push(uid);
+          }
+          let removed = 0;
+          for (let start = 0; start < stale.length; start += TRASH_PURGE_CHUNK) {
+            const chunk = stale.slice(start, start + TRASH_PURGE_CHUNK);
+            const range = compressUids(chunk);
+            if (!range) continue;
+            await client.messageFlagsAdd(range, ['\\Deleted'], { uid: true });
+            await client.messageDelete(range, { uid: true });
+            removed += chunk.length;
+          }
+          return { accountId: acct.id, email: acct.email, removed };
+        })
+      )
+    );
+    return results.map((result, index) =>
+      result.status === 'fulfilled'
+        ? result.value
+        : {
+            accountId: accounts[index].id,
+            email: accounts[index].email,
+            removed: 0,
+            error: friendlyError(result.reason, '', accounts[index])
+          }
+    );
   }
 
   _cacheKey(accountId, pathName, uid) {

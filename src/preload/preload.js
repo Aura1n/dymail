@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('dymail', {
     markAllRead: (payload) => call('mail:mark-all-read', payload),
     move: (payload) => call('mail:move', payload),
     deletePermanent: (payload) => call('mail:delete-permanent', payload),
+    restore: (payload) => call('mail:restore', payload),
+    purgeTrash: () => call('mail:purge-trash', {}),
     saveAttachment: (payload) => call('mail:save-attachment', payload)
   },
   compose: {

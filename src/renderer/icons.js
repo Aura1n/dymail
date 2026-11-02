@@ -19,6 +19,8 @@ const paths = {
     '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6.5 7l.8 12a1 1 0 0 0 1 .9h7.4a1 1 0 0 0 1-.9l.8-12"/><path d="M10 11v5M14 11v5"/>',
   archive:
     '<path d="M4 8.5h16V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8.5Z"/><path d="M3 4.5h18v4H3z"/><path d="M9.5 12.5h5"/>',
+  restore:
+    '<path d="M4 13.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4.5"/><path d="M4 13.5h4.6l1.5 2h3.8l1.5-2H20"/><path d="M12 12.5V3.5"/><path d="m8.2 7.3 3.8-3.8 3.8 3.8"/>',
   reply: '<path d="m9 7-5 5 5 5"/><path d="M4 12h9.5a6.5 6.5 0 0 1 6.5 6.5V20"/>',
   replyAll:
     '<path d="m7 7-5 5 5 5"/><path d="m12 7-5 5 5 5"/><path d="M7 12h7.5a6.5 6.5 0 0 1 6.5 6.5V20"/>',

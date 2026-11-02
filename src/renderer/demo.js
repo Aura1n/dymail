@@ -210,6 +210,14 @@ const boxes = {
         date: days(8),
         seen: true,
         text: '这是被新版本替换的周报。'
+      }),
+      message({
+        subject: '会议室 A 预约确认',
+        from: { name: '行政服务台', address: 'admin@northwind.cn' },
+        to: [{ name: '林辰', address: 'lin.chen@outlook.com' }],
+        date: days(45),
+        seen: true,
+        text: '您预约的会议室 A 已过期，如需使用请重新预约。'
       })
     ],
     archive: [
@@ -297,7 +305,40 @@ const boxes = {
         text: 'Claim your reward now.'
       })
     ],
-    trash: [],
+    trash: [
+      message({
+        subject: 'Ticket #4402 closed as duplicate',
+        from: { name: 'Support Desk', address: 'support@example-cloud.com' },
+        to: [{ name: 'Lin Chen', address: 'linchen@gmail.com' }],
+        date: days(6),
+        seen: true,
+        text: 'This ticket was merged into #4398.'
+      }),
+      message({
+        subject: 'Re: hotel booking',
+        from: { name: 'Reservation Desk', address: 'stay@example-hotel.com' },
+        to: [{ name: 'Lin Chen', address: 'linchen@gmail.com' }],
+        date: days(7),
+        seen: true,
+        text: 'The second reservation has been cancelled.'
+      }),
+      message({
+        subject: 'Wrong draft of the contract',
+        from: { name: 'Li Ang', address: 'liang@northwind.cn' },
+        to: [{ name: 'Lin Chen', address: 'linchen@gmail.com' }],
+        date: days(11),
+        seen: true,
+        text: 'Ignore this copy, the signed version is in the shared drive.'
+      }),
+      message({
+        subject: 'Old security alert',
+        from: { name: 'Google', address: 'no-reply@accounts.google.com' },
+        to: [{ name: 'Lin Chen', address: 'linchen@gmail.com' }],
+        date: days(31),
+        seen: true,
+        text: 'A sign-in from an old device was blocked.'
+      })
+    ],
     archive: [
       message({
         subject: 'Invoice #2026-0311',
@@ -367,6 +408,13 @@ const boxes = {
         date: days(9),
         seen: true,
         text: '您的积分将在月底过期。'
+      }),
+      message({
+        subject: '旧账单流水',
+        from: { name: '账单通知', address: 'billing@example.com' },
+        date: days(61),
+        seen: true,
+        text: '该笔账单已结清，流水留档备查。'
       })
     ],
     archive: [
@@ -440,6 +488,8 @@ const demoAccountSaves = [];
 const demoDeeplKeys = [];
 const demoMoves = [];
 const demoDeletes = [];
+const demoRestores = [];
+const demoPurges = [];
 window.dymailDemoCalls = {
   opened: demoOpened,
   notifications: demoNotifications,
@@ -447,7 +497,9 @@ window.dymailDemoCalls = {
   contacts: demoContacts,
   deeplKeys: demoDeeplKeys,
   moves: demoMoves,
-  deletes: demoDeletes
+  deletes: demoDeletes,
+  restores: demoRestores,
+  purges: demoPurges
 };
 
 const settings = {
@@ -461,6 +513,8 @@ const settings = {
   updateRepo: 'Aura1n/dymail',
   updateSkipped: '',
   updateLastCheck: 0,
+  trashPurgeDays: 30,
+  trashPurgeAt: 0,
   hasDeeplKey: false
 };
 
@@ -560,7 +614,7 @@ function makeId(prefix) {
 export function createDemoApi() {
   return {
     app: {
-      info: async () => ({ version: '1.1.1', platform: 'win32', packaged: false }),
+      info: async () => ({ version: '1.3.0', platform: 'win32', packaged: false }),
       open: async (url) => {
         demoOpened.push(String(url || ''));
         return true;
@@ -821,12 +875,63 @@ export function createDemoApi() {
         return true;
       },
 
+      /* 还原 = MOVE back to INBOX; the real server can carry the \Deleted flag
+         along, which the mail service clears on the destination uid set. */
+      restore: async ({ accountId, path, uid, uids }) => {
+        await wait(180);
+        const source = folderMessages(accountId, path);
+        const destination = folderMessages(accountId, FOLDER_PATHS.inbox);
+        if (!source || !destination) throw new Error('文件夹不存在');
+        const wanted = new Set((uids && uids.length ? uids : [uid]).map(Number));
+        const moving = source.filter((item) => wanted.has(Number(item.uid)));
+        if (!moving.length) throw new Error('邮件不存在');
+        demoRestores.push({ count: moving.length, target: FOLDER_PATHS.inbox });
+        for (let i = source.length - 1; i >= 0; i -= 1) {
+          if (wanted.has(Number(source[i].uid))) {
+            const [item] = source.splice(i, 1);
+            item.seen = true;
+            destination.unshift(item);
+          }
+        }
+        return { path: FOLDER_PATHS.inbox };
+      },
+
+      /* Mirrors the main-process guard: one sweep per ~day, and only when the
+         setting is a real day count. */
+      purgeTrash: async () => {
+        const limit = Number(settings.trashPurgeDays);
+        if (!Number.isInteger(limit) || limit < 1) {
+          return { days: 0, total: 0, results: [], skipped: true };
+        }
+        if (Date.now() - (Number(settings.trashPurgeAt) || 0) < 20 * 60 * 60 * 1000) {
+          return { days: limit, total: 0, results: [], skipped: true };
+        }
+        await wait(240);
+        settings.trashPurgeAt = Date.now();
+        const cutoff = Date.now() - limit * 86400000;
+        const results = [];
+        for (const account of accounts) {
+          const list = (boxes[account.id] && boxes[account.id].trash) || [];
+          let removed = 0;
+          for (let i = list.length - 1; i >= 0; i -= 1) {
+            const at = Date.parse(list[i].date) || 0;
+            if (at && at < cutoff) {
+              list.splice(i, 1);
+              removed += 1;
+            }
+          }
+          results.push({ accountId: account.id, email: account.email, removed });
+        }
+        const total = results.reduce((sum, item) => sum + item.removed, 0);
+        demoPurges.push({ days: limit, total });
+        return { days: limit, total, results };
+      },
+
       saveAttachment: async () => {
         await wait(220);
         return { canceled: true };
       }
     },
-
     compose: {
       send: async (payload) => {
         await wait(520);
@@ -976,6 +1081,9 @@ export function createDemoApi() {
           }
           if (typeof payload.updateSkipped === 'string') settings.updateSkipped = payload.updateSkipped.trim();
           if (Number.isFinite(Number(payload.updateLastCheck))) settings.updateLastCheck = Number(payload.updateLastCheck);
+          if ([0, 15, 30, 60, 90].includes(Number(payload.trashPurgeDays))) {
+            settings.trashPurgeDays = Number(payload.trashPurgeDays);
+          }
         }
         return { ...settings };
       },
@@ -1002,10 +1110,10 @@ export function createDemoApi() {
         await wait(400);
         if (!settings.updateRepo) throw new Error('未配置更新源，请填写 owner/repo');
         return {
-          current: '1.1.1',
-          latest: '1.2.0',
+          current: '1.3.0',
+          latest: '1.3.1',
           hasUpdate: true,
-          notes: '· 邮件列表支持多选、一键全选与批量星标、已读、归档、删除\n· 新增全部星标与归档视图、本地联系人\n· 阅读页可一键把英文正文翻译成中文',
+          notes: '· 已删除邮件可还原到收件箱，超过设定天数的自动彻底删除\n· 批量操作合并为单条 IMAP 命令，账户没有归档文件夹时自动创建\n· 阅读页可一键把英文正文翻译成中文',
           url: `https://github.com/${settings.updateRepo}/releases/latest`,
           page: `https://github.com/${settings.updateRepo}/releases`,
           checkedAt: Date.now()

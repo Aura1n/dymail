@@ -73,6 +73,7 @@
           <button type="button" class="icon-btn" id="batch-unstar" title="取消星标"><span data-icon="star-filled"></span></button>
           <button type="button" class="icon-btn" id="batch-read" title="标为已读"><span data-icon="checkAll"></span></button>
           <button type="button" class="icon-btn" id="batch-unread" title="标为未读"><span data-icon="unread-dot"></span></button>
+          <button type="button" class="icon-btn" id="batch-restore" title="还原到收件箱" hidden><span data-icon="restore"></span></button>
           <button type="button" class="icon-btn" id="batch-archive" title="归档"><span data-icon="archive"></span></button>
           <button type="button" class="icon-btn" id="batch-trash" title="删除"><span data-icon="trash"></span></button>
           <span class="spacer"></span>
@@ -130,6 +131,9 @@
                   <span data-icon="forward"></span>
                 </button>
                 <span class="action-divider"></span>
+                <button type="button" class="icon-btn" id="action-restore" title="还原到收件箱" hidden>
+                  <span data-icon="restore"></span>
+                </button>
                 <button type="button" class="icon-btn" id="action-archive" title="归档">
                   <span data-icon="archive"></span>
                 </button>
@@ -293,6 +297,16 @@
               <span class="setting-label">关闭时留在后台</span>
               <span class="switch"><input type="checkbox" id="tray-input"><span></span></span>
             </label>
+            <label class="setting-row">
+              <span class="setting-label">已删除邮件自动清理</span>
+              <select id="trash-purge-select">
+                <option value="0">关闭</option>
+                <option value="15">15 天后彻底删除</option>
+                <option value="30">30 天后彻底删除</option>
+                <option value="60">60 天后彻底删除</option>
+                <option value="90">90 天后彻底删除</option>
+              </select>
+            </label>
             <label class="setting-block">
               <span class="setting-label">DeepL 密钥（可选）</span>
               <input id="deepl-key-input" type="password" placeholder="留空则使用免费翻译服务" spellcheck="false" autocomplete="off">
@@ -300,7 +314,7 @@
             </label>
             <label class="setting-block">
               <span class="setting-label">签名</span>
-              <textarea id="signature-input" rows="5" spellcheck="true"></textarea>
+              <textarea id="signature-input" rows="4" spellcheck="true"></textarea>
             </label>
           </div>
           <footer class="settings-foot">
