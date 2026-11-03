@@ -48,11 +48,15 @@
   document.querySelector('.settings-tab[data-tab="update"]').click();
   await wait(250);
   rec('updateVersionRow', document.getElementById('update-version').textContent);
-  const repoEl = document.getElementById('update-repo-input');
-  repoEl.value = 'dymail/dymail';
-  repoEl.dispatchEvent(new Event('change', { bubbles: true }));
-  await wait(400);
-  rec('repoSaved', s().updateRepo);
+  const repoLink = document.getElementById('update-repo-link');
+  const repoOpenedBefore = window.dymailDemoCalls.opened.length;
+  repoLink.click();
+  await wait(200);
+  rec('repoLink', {
+    hidden: repoLink.hidden,
+    text: repoLink.textContent,
+    opened: window.dymailDemoCalls.opened.slice(repoOpenedBefore)
+  });
 
   const dlg = document.getElementById('update-dialog');
   document.getElementById('update-check-now').click();

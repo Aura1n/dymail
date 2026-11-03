@@ -353,10 +353,12 @@
               <span class="setting-label">自动检查更新</span>
               <span class="switch"><input type="checkbox" id="update-check-input"><span></span></span>
             </label>
-            <label class="setting-block">
+            <div class="setting-row">
               <span class="setting-label">GitHub 仓库</span>
-              <input id="update-repo-input" type="text" placeholder="owner/repo" spellcheck="false" autocomplete="off">
-            </label>
+              <span class="setting-value">
+                <button type="button" class="link-btn" id="update-repo-link" hidden>—</button>
+              </span>
+            </div>
             <div class="setting-row">
               <span class="setting-label">已忽略版本</span>
               <span class="setting-value">

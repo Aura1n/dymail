@@ -296,7 +296,7 @@ function cacheElements() {
     'compose-cc', 'compose-bcc-line', 'compose-bcc', 'compose-subject', 'compose-editor-wrap',
     'compose-editor', 'compose-attach', 'compose-attachments', 'compose-send', 'compose-hint',
     'compose-save', 'toast', 'block-remote-input', 'notify-input', 'tray-input', 'update-check-input',
-    'update-repo-input', 'update-version', 'update-skipped', 'update-reset-skip', 'update-check-now',
+    'update-repo-link', 'update-version', 'update-skipped', 'update-reset-skip', 'update-check-now',
     'update-note', 'update-dialog', 'update-from', 'update-to', 'update-notes', 'update-ignore',
     'update-later', 'update-download', 'batch-bar', 'batch-count', 'batch-star', 'batch-unstar',
     'batch-read', 'batch-unread', 'batch-archive', 'batch-trash', 'batch-clear', 'contacts-dialog',
@@ -3175,10 +3175,18 @@ async function notifyNewMail({ account, path, added }) {
 /* Update checks                                                      */
 /* ------------------------------------------------------------------ */
 
+function renderUpdateRepoLink() {
+  const repo = String(state.settings.updateRepo || '').trim();
+  const valid = /^[\w.-]+\/[\w.-]+$/.test(repo);
+  els.updateRepoLink.hidden = !valid;
+  els.updateRepoLink.textContent = valid ? repo : '—';
+  els.updateRepoLink.dataset.url = valid ? `https://github.com/${repo}` : '';
+}
+
 function renderSettingsUpdate() {
   els.updateVersion.textContent = state.appVersion || '—';
   els.updateCheckInput.checked = state.settings.updateCheck !== false;
-  els.updateRepoInput.value = state.settings.updateRepo || '';
+  renderUpdateRepoLink();
   const skipped = state.settings.updateSkipped || '';
   els.updateSkipped.textContent = skipped || '无';
   els.updateResetSkip.hidden = !skipped;
@@ -3191,8 +3199,7 @@ function setUpdateNote(message) {
 async function saveUpdateSettings() {
   try {
     state.settings = await api.settings.update({
-      updateCheck: els.updateCheckInput.checked,
-      updateRepo: els.updateRepoInput.value
+      updateCheck: els.updateCheckInput.checked
     });
     renderSettingsUpdate();
     setUpdateNote('');
@@ -3770,7 +3777,10 @@ function bindSettingsDialog() {
   });
   els.updateCheckNow.addEventListener('click', () => checkForUpdate());
   els.updateCheckInput.addEventListener('change', saveUpdateSettings);
-  els.updateRepoInput.addEventListener('change', saveUpdateSettings);
+  els.updateRepoLink.addEventListener('click', () => {
+    const url = els.updateRepoLink.dataset.url;
+    if (url) api.app.open(url).catch(() => {});
+  });
   els.updateResetSkip.addEventListener('click', async () => {
     try {
       state.settings = await api.settings.update({ updateSkipped: '' });
