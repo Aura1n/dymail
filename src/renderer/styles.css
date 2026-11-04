@@ -1356,7 +1356,7 @@ dialog.account-sheet {
 
 dialog.settings-sheet {
   width: 780px;
-  height: min(600px, calc(100vh - 40px));
+  height: min(640px, calc(100vh - 40px));
 }
 
 .dialog-head {

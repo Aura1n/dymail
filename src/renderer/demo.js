@@ -490,12 +490,15 @@ const demoMoves = [];
 const demoDeletes = [];
 const demoRestores = [];
 const demoPurges = [];
+const demoAutoLaunchCalls = [];
+let demoAutoLaunch = false;
 window.dymailDemoCalls = {
   opened: demoOpened,
   notifications: demoNotifications,
   accountSaves: demoAccountSaves,
   contacts: demoContacts,
   deeplKeys: demoDeeplKeys,
+  autoLaunch: demoAutoLaunchCalls,
   moves: demoMoves,
   deletes: demoDeletes,
   restores: demoRestores,
@@ -622,6 +625,12 @@ export function createDemoApi() {
   return {
     app: {
       info: () => realInfo,
+      getAutoLaunch: async () => demoAutoLaunch,
+      setAutoLaunch: async (enabled) => {
+        demoAutoLaunch = Boolean(enabled);
+        demoAutoLaunchCalls.push(demoAutoLaunch);
+        return demoAutoLaunch;
+      },
       open: async (url) => {
         demoOpened.push(String(url || ''));
         return true;

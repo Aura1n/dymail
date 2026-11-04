@@ -381,6 +381,14 @@ function registerIpc() {
     return true;
   });
 
+  handle('app:get-autolaunch', () => app.getLoginItemSettings().openAtLogin);
+
+  handle('app:set-autolaunch', (payload) => {
+    if (!app.isPackaged) throw new Error('开发模式不修改开机启动项，请使用安装版或便携版');
+    app.setLoginItemSettings({ openAtLogin: Boolean(payload.enabled) });
+    return app.getLoginItemSettings().openAtLogin;
+  });
+
   handle('app:notify', (payload) => {
     if (!Notification.isSupported()) return false;
     const notification = new Notification({

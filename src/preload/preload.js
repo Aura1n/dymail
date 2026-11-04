@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('dymail', {
   app: {
     info: () => call('app:info'),
     open: (url) => call('app:open', { url }),
+    getAutoLaunch: () => call('app:get-autolaunch'),
+    setAutoLaunch: (enabled) => call('app:set-autolaunch', { enabled }),
     notify: (payload) => call('app:notify', payload)
   },
   update: {

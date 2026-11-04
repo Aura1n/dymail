@@ -208,6 +208,7 @@ const state = {
   compose: null,
   editingAccountId: null,
   accountBusy: false,
+  autoLaunch: false,
   settingsTab: 'accounts',
   generalNoteTimer: null,
   appVersion: '',
@@ -295,7 +296,7 @@ function cacheElements() {
     'compose-close', 'compose-account', 'compose-to', 'toggle-cc', 'toggle-bcc', 'compose-cc-line',
     'compose-cc', 'compose-bcc-line', 'compose-bcc', 'compose-subject', 'compose-editor-wrap',
     'compose-editor', 'compose-attach', 'compose-attachments', 'compose-send', 'compose-hint',
-    'compose-save', 'toast', 'block-remote-input', 'notify-input', 'tray-input', 'update-check-input',
+    'compose-save', 'toast', 'block-remote-input', 'notify-input', 'tray-input', 'auto-launch-input', 'update-check-input',
     'update-repo-link', 'update-version', 'update-skipped', 'update-reset-skip', 'update-check-now',
     'update-note', 'update-dialog', 'update-from', 'update-to', 'update-notes', 'update-ignore',
     'update-later', 'update-download', 'batch-bar', 'batch-count', 'batch-star', 'batch-unstar',
@@ -3061,6 +3062,18 @@ function renderSettingsAccounts() {
     .join('');
 }
 
+/* The system owns the autostart entry, so the switch mirrors Windows rather
+   than a stored copy that could drift from reality. */
+function refreshAutoLaunch() {
+  api.app
+    .getAutoLaunch()
+    .then((enabled) => {
+      state.autoLaunch = Boolean(enabled);
+      els.autoLaunchInput.checked = state.autoLaunch;
+    })
+    .catch(() => {});
+}
+
 function fillGeneralSettings() {
   els.refreshSelect.value = String(state.settings.refreshSeconds);
   els.trashPurgeSelect.value = String(Number(state.settings.trashPurgeDays) || 0);
@@ -3068,6 +3081,7 @@ function fillGeneralSettings() {
   els.blockRemoteInput.checked = state.settings.remoteImages === 'block';
   els.notifyInput.checked = state.settings.notifyNewMail !== false;
   els.trayInput.checked = state.settings.closeToTray !== false;
+  refreshAutoLaunch();
   /* The saved key is a credential and never comes back to the renderer, so the
      field stays empty and only shows whether one is already stored. */
   els.deeplKeyInput.value = '';
@@ -3103,6 +3117,14 @@ async function saveGeneralSettings() {
       state.settings = await api.settings.setDeeplKey(els.deeplKeyInput.value);
       state.deeplKeyTouched = false;
       els.deeplKeyInput.value = '';
+    }
+    if (els.autoLaunchInput.checked !== state.autoLaunch) {
+      try {
+        state.autoLaunch = Boolean(await api.app.setAutoLaunch(els.autoLaunchInput.checked));
+      } catch (err) {
+        toast(err && err.message ? err.message : '开机启动设置失败');
+      }
+      els.autoLaunchInput.checked = state.autoLaunch;
     }
     renderDeeplKeyState();
     rememberUnseen();
