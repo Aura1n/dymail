@@ -491,7 +491,16 @@ const demoDeletes = [];
 const demoRestores = [];
 const demoPurges = [];
 const demoAutoLaunchCalls = [];
+const demoSyncOneCalls = [];
 let demoAutoLaunch = false;
+let demoPushHandler = null;
+
+/* Lets the harness exercise the same subscription path the preload exposes, so
+   the UI reaction is real even though no IMAP connection exists in demo mode. */
+window.__dymailPush = (accountId) => {
+  if (typeof demoPushHandler === 'function') demoPushHandler({ accountId, path: 'INBOX', count: 0 });
+};
+
 window.dymailDemoCalls = {
   opened: demoOpened,
   notifications: demoNotifications,
@@ -499,6 +508,7 @@ window.dymailDemoCalls = {
   contacts: demoContacts,
   deeplKeys: demoDeeplKeys,
   autoLaunch: demoAutoLaunchCalls,
+  syncOne: demoSyncOneCalls,
   moves: demoMoves,
   deletes: demoDeletes,
   restores: demoRestores,
@@ -685,6 +695,13 @@ export function createDemoApi() {
       sync: async () => {
         await wait(160);
         return accounts.map(accountView);
+      },
+      syncOne: async (accountId) => {
+        demoSyncOneCalls.push(accountId);
+        await wait(60);
+        const account = findAccount(accountId);
+        if (!account) throw new Error('账户不存在');
+        return accountView(account);
       }
     },
 
@@ -946,6 +963,9 @@ export function createDemoApi() {
       saveAttachment: async () => {
         await wait(220);
         return { canceled: true };
+      },
+      onPush: (handler) => {
+        demoPushHandler = handler;
       }
     },
     compose: {

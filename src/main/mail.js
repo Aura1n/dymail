@@ -194,11 +194,22 @@ function compileMessage(options) {
   });
 }
 
+/* New mail arrives over a dedicated IDLE connection per account; the poll timer
+   stays as a slow safety net. Retries back off, and rejected credentials stop the
+   watcher so the provider is not hammered or locked. */
+const IDLE_RETRY_MS = [30000, 60000, 120000, 300000];
+const IDLE_MAX_IDLE_MS = 25 * 60 * 1000;
+const IDLE_AUTO_DELAY_MS = 1000;
+
 class MailService {
-  constructor(store) {
+  constructor(store, options = {}) {
     this.store = store;
     this.sessions = new Map();
     this.parseCache = new Map();
+    this.watchers = new Map();
+    this.onNewMail = null;
+    this.idleRetryMs =
+      Array.isArray(options.idleRetryMs) && options.idleRetryMs.length ? options.idleRetryMs : IDLE_RETRY_MS;
   }
 
   _session(accountId) {
@@ -227,7 +238,142 @@ class MailService {
     return run;
   }
 
+  /* ---- INBOX watchers (IMAP IDLE) ---------------------------------- */
+
+  watchAll() {
+    for (const account of this.store.listAccounts()) this.watch(account.id);
+  }
+
+  watch(accountId) {
+    const account = this.store.getAccount(accountId);
+    if (!account) return;
+    this.unwatch(account.id);
+    const state = { stopped: false, client: null, retry: 0, timer: null };
+    this.watchers.set(account.id, state);
+    this._watchLoop(account, state);
+  }
+
+  unwatch(accountId) {
+    const state = this.watchers.get(accountId);
+    if (!state) return;
+    state.stopped = true;
+    this.watchers.delete(accountId);
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    const client = state.client;
+    state.client = null;
+    if (client) {
+      try {
+        client.close();
+      } catch {}
+    }
+  }
+
+  unwatchAll() {
+    for (const accountId of [...this.watchers.keys()]) this.unwatch(accountId);
+  }
+
+  _watchRetry(account, state) {
+    if (state.stopped || state.timer) return;
+    const index = Math.min(state.retry, this.idleRetryMs.length - 1);
+    const delay = this.idleRetryMs[index];
+    state.retry += 1;
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      this._watchLoop(account, state);
+    }, delay);
+    if (state.timer.unref) state.timer.unref();
+  }
+
+  async _watchLoop(account, state) {
+    if (state.stopped) return;
+    let pass = null;
+    try {
+      pass = this.store.getPassword(account.id);
+    } catch {}
+    if (!pass) {
+      this._watchRetry(account, state);
+      return;
+    }
+    let client;
+    try {
+      client = new ImapFlow({
+        ...this._clientOptions(account, pass),
+        autoIdleDelay: IDLE_AUTO_DELAY_MS,
+        maxIdleTime: IDLE_MAX_IDLE_MS
+      });
+    } catch {
+      this._watchRetry(account, state);
+      return;
+    }
+    state.client = client;
+    client.on('error', () => {});
+    client.on('close', () => {
+      if (state.client === client) state.client = null;
+      this._watchRetry(account, state);
+    });
+    client.on('exists', (data) => {
+      if (state.client !== client) return;
+      if (Number(data.count) <= Number(data.prevCount)) return;
+      state.retry = 0;
+      if (typeof this.onNewMail === 'function') {
+        try {
+          this.onNewMail(account.id, data.path, Number(data.count));
+        } catch {}
+      }
+    });
+    try {
+      await client.connect();
+      await client.mailboxOpen('INBOX');
+      state.retry = 0;
+    } catch (err) {
+      if (state.client === client) state.client = null;
+      try {
+        client.close();
+      } catch {}
+      if (isAuthFailure(err)) {
+        this.unwatch(account.id);
+        return;
+      }
+      this._watchRetry(account, state);
+    }
+  }
+
+  /* One account's folder status, for refreshes triggered by a push instead of
+     the full sync, which would re-STATUS every account on every new message. */
+  async syncOne(accountId) {
+    const account = this.store.getAccount(accountId);
+    if (!account) throw new Error('账户不存在');
+    try {
+      const folders = await this._enqueue(account.id, async (acct, session) => {
+        const client = await this._connect(acct, session);
+        const list = await this._loadFolders(acct, session, client, true);
+        const withStatus = await this._statusFolders(client, list);
+        session.lastStatus = withStatus;
+        return withStatus;
+      });
+      return {
+        ...account,
+        folders,
+        draftCount: this.store.draftCount(account.id),
+        error: null
+      };
+    } catch (err) {
+      const session = this.sessions.get(account.id);
+      const cached = (session && (session.lastStatus || session.folders)) || [];
+      return {
+        ...account,
+        folders: cached,
+        draftCount: this.store.draftCount(account.id),
+        error: friendlyError(err, '', account)
+      };
+    }
+  }
+
   reset(accountId) {
+    this.unwatch(accountId);
     const session = this.sessions.get(accountId);
     if (!session) return;
     if (session.client) {
@@ -239,6 +385,7 @@ class MailService {
   }
 
   disconnectAll() {
+    this.unwatchAll();
     for (const session of this.sessions.values()) {
       if (session.client) {
         try {

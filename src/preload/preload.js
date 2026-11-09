@@ -10,6 +10,15 @@ async function call(channel, payload) {
   return response.data;
 }
 
+let mailPushListener = null;
+
+function onMailPush(handler) {
+  if (typeof handler !== 'function') return;
+  if (mailPushListener) ipcRenderer.removeListener('mail:push', mailPushListener);
+  mailPushListener = (_event, payload) => handler(payload);
+  ipcRenderer.on('mail:push', mailPushListener);
+}
+
 contextBridge.exposeInMainWorld('dymail', {
   app: {
     info: () => call('app:info'),
@@ -27,7 +36,8 @@ contextBridge.exposeInMainWorld('dymail', {
     remove: (id) => call('accounts:remove', { id })
   },
   folders: {
-    sync: () => call('folders:sync')
+    sync: () => call('folders:sync'),
+    syncOne: (accountId) => call('folders:sync-one', { accountId })
   },
   mail: {
     list: (payload) => call('mail:list', payload),
@@ -43,7 +53,8 @@ contextBridge.exposeInMainWorld('dymail', {
     deletePermanent: (payload) => call('mail:delete-permanent', payload),
     restore: (payload) => call('mail:restore', payload),
     purgeTrash: () => call('mail:purge-trash', {}),
-    saveAttachment: (payload) => call('mail:save-attachment', payload)
+    saveAttachment: (payload) => call('mail:save-attachment', payload),
+    onPush: onMailPush
   },
   compose: {
     send: (payload) => call('compose:send', payload)

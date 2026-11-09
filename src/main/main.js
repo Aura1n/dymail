@@ -461,6 +461,7 @@ function registerIpc() {
       typeof payload.password === 'string' && payload.password.length ? password : null
     );
     mail.reset(saved.id);
+    mail.watch(saved.id);
     return saved;
   });
 
@@ -475,6 +476,8 @@ function registerIpc() {
   });
 
   handle('folders:sync', () => mail.sync());
+
+  handle('folders:sync-one', (payload) => mail.syncOne(text(payload.accountId, 100)));
 
   handle('mail:list', (payload) => {
     const accountId = text(payload.accountId, 100);
@@ -712,6 +715,12 @@ async function boot() {
   protocol.handle('mailview', mailDocumentResponse);
   store = new Store();
   mail = new MailService(store);
+  mail.onNewMail = (accountId, path, count) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('mail:push', { accountId, path, count });
+    }
+  };
+  mail.watchAll();
   buildMenu();
   registerIpc();
   syncThemeSource();

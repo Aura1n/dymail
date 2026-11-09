@@ -254,6 +254,7 @@ async function init() {
   loadContacts();
 
   await loadBaseAccounts();
+  subscribeMailPush();
 
   if (DEMO) exposeDemoDebug();
 }
@@ -1495,6 +1496,62 @@ function scheduleRefresh() {
   if (seconds > 0) {
     state.refreshTimer = setInterval(backgroundRefresh, seconds * 1000);
   }
+}
+
+/* A push only names the account that changed; folder status and notifications
+   still come from the normal sync path, so a push that lands mid-sync is retried
+   instead of racing it. */
+const PUSH_DEBOUNCE_MS = 600;
+let pushTimer = null;
+let pushRetries = 0;
+const pushPending = new Set();
+
+function subscribeMailPush() {
+  if (!api.mail || typeof api.mail.onPush !== 'function') return;
+  api.mail.onPush((payload) => {
+    const accountId = payload && payload.accountId ? String(payload.accountId) : '';
+    if (!accountId) return;
+    pushPending.add(accountId);
+    scheduleMailPush();
+  });
+}
+
+function scheduleMailPush() {
+  if (pushTimer) return;
+  pushTimer = window.setTimeout(() => {
+    pushTimer = null;
+    applyMailPush();
+  }, PUSH_DEBOUNCE_MS);
+}
+
+async function applyMailPush() {
+  if (!pushPending.size) return;
+  if (state.syncing || state.loading) {
+    if (pushRetries < 20) {
+      pushRetries += 1;
+      scheduleMailPush();
+    }
+    return;
+  }
+  pushRetries = 0;
+  const ids = [...pushPending];
+  pushPending.clear();
+  let touched = false;
+  for (const accountId of ids) {
+    try {
+      const updated = await api.folders.syncOne(accountId);
+      const index = state.accounts.findIndex((account) => account.id === accountId);
+      if (index >= 0) state.accounts[index] = normalizeAccount(updated);
+      else if (updated && updated.id) state.accounts.push(normalizeAccount(updated));
+      touched = true;
+    } catch {}
+  }
+  if (!touched) return;
+  await detectNewMail();
+  renderSidebar();
+  renderHeader();
+  updateListBanner();
+  if (!document.hidden) await silentReloadList();
 }
 
 /* ------------------------------------------------------------------ */
@@ -4094,6 +4151,11 @@ function exposeDemoDebug() {
       await detectNewMail();
       renderSidebar();
       return true;
+    },
+    pushMail: (accountId) => {
+      const id = String(accountId || (state.accounts[0] && state.accounts[0].id) || '');
+      if (id && typeof window.__dymailPush === 'function') window.__dymailPush(id);
+      return Boolean(id);
     }
   };
 }
