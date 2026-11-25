@@ -6,7 +6,7 @@
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
-const { MailService } = require('../src/main/mail');
+const { MailService } = require('../../src/main/mail');
 
 const checks = [];
 const want = (label, ok, detail) => checks.push([label, ok, detail]);
@@ -228,7 +228,7 @@ async function main() {
   want('rejected credentials do not retry', authFake.state.connections === 1, `connections=${authFake.state.connections}`);
   await authFake.close();
 
-  const read = (file) => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8');
+  const read = (file) => fs.readFileSync(path.join(__dirname, '..', '..', 'src', file), 'utf8');
   const mainJs = read('main/main.js');
   const preload = read('preload/preload.js');
   const renderer = read('renderer/app.js');

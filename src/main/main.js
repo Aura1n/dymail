@@ -19,6 +19,8 @@ const {
 } = require('electron');
 const { Store } = require('./store');
 const { MailService } = require('./mail');
+const { OAuthService } = require('./oauth');
+const { UpdateService } = require('./updater');
 const { translateSegments } = require('./translate');
 
 protocol.registerSchemesAsPrivileged([
@@ -40,6 +42,8 @@ const wantDemo = process.env.DYMALL_DEMO === '1';
 let mainWindow = null;
 let store = null;
 let mail = null;
+let oauth = null;
+let updater = null;
 let tray = null;
 let isQuitting = false;
 const trayIconPath = path.join(__dirname, '../../assets/tray.png');
@@ -49,6 +53,9 @@ const MAX_MAIL_DOCUMENT_BYTES = 40 * 1024 * 1024;
 /* How often the automatic trash sweep is allowed to run. */
 const PURGE_INTERVAL_MS = 20 * 60 * 60 * 1000;
 const mailDocuments = new Map();
+/* 授权完成后令牌先留在主进程，等账户真正保存时才落盘；渲染层只拿到一张一次性的票据。 */
+const OAUTH_TICKET_TTL_MS = 15 * 60 * 1000;
+const pendingOAuth = new Map();
 
 function rememberDocument(document) {
   if (typeof document !== 'string' || !document) throw new Error('邮件内容无效');
@@ -155,16 +162,7 @@ function applyTitleBarChrome(win) {
   }
 }
 
-function compareVersions(a, b) {
-  const left = String(a).split('.').map((part) => parseInt(part, 10) || 0);
-  const right = String(b).split('.').map((part) => parseInt(part, 10) || 0);
-  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
-    const x = left[i] || 0;
-    const y = right[i] || 0;
-    if (x !== y) return x > y ? 1 : -1;
-  }
-  return 0;
-}
+/* 版本比较与更新下载都放在 updater.js，这里只保留窗口与 IPC 的编排。 */
 
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -320,11 +318,15 @@ function createWindow() {
   return win;
 }
 
-function ok(data) {
-  return { ok: true, data };
+function broadcast(channel, payload) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
 }
 
-function fail(err) {
+function ok(data) {
+  return { ok: true, data };
+}function fail(err) {
   const message = err && err.message ? String(err.message) : '操作失败';
   return { ok: false, error: message.slice(0, 400) };
 }
@@ -401,34 +403,27 @@ function registerIpc() {
     return true;
   });
 
-  handle('update:check', async () => {
-    const repo = String(store.getSettings().updateRepo || '').trim();
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('未配置更新源，请填写 owner/repo');
-    const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-      headers: { accept: 'application/vnd.github+json', 'user-agent': 'Dymail' }
-    });
-    if (response.status === 404) throw new Error('该仓库还没有发布版本');
-    if (!response.ok) throw new Error(`更新源返回 ${response.status}`);
-    const release = await response.json();
-    const latest = String(release.tag_name || release.name || '').replace(/^v/i, '').trim();
-    if (!/^\d+(\.\d+)*/.test(latest)) throw new Error('无法识别最新版本号');
-    const current = app.getVersion();
-    const assets = Array.isArray(release.assets) ? release.assets : [];
-    const exeAssets = assets.filter((asset) => /\.exe$/i.test(String(asset.name || '')));
-    const installer = exeAssets.find((asset) => /setup/i.test(String(asset.name || ''))) || exeAssets[0];
-    const page = String(release.html_url || `https://github.com/${repo}/releases`);
-    return {
-      current,
-      latest,
-      hasUpdate: compareVersions(latest, current) > 0,
-      notes: String(release.body || '').slice(0, 4000),
-      url: installer && installer.browser_download_url ? String(installer.browser_download_url) : page,
-      page,
-      checkedAt: Date.now()
-    };
-  });
+  handle('update:check', () => updater.check());
+
+  handle('update:download', (payload) => updater.startDownload(payload.version ? text(payload.version, 40) : ''));
+  handle('update:install', () => updater.install());
+  handle('update:cancel', () => updater.cancel());
 
   handle('accounts:list', () => store.listAccounts());
+
+  /* 打开系统浏览器完成授权，回调落在本地回环端口。返回的票据只能兑换一次，
+     且绑定授权时的邮箱地址。 */
+  handle('accounts:oauth-authorize', async (payload) => {
+    const provider = text(payload.provider, 20);
+    const result = await oauth.authorize(provider);
+    const now = Date.now();
+    for (const [key, item] of pendingOAuth) {
+      if (now - item.createdAt > OAUTH_TICKET_TTL_MS) pendingOAuth.delete(key);
+    }
+    const ticket = crypto.randomUUID();
+    pendingOAuth.set(ticket, { ...result, createdAt: now });
+    return { ticket, email: result.email, name: result.name };
+  });
 
   handle('accounts:save', async (payload) => {
     const email = text(payload.email, 320).trim();
@@ -443,22 +438,54 @@ function registerIpc() {
     const imap = serverConfig(payload.imap, 'IMAP');
     const smtp = serverConfig(payload.smtp, 'SMTP');
     const name = payload.name == null ? '' : text(payload.name, 120);
+    const authType = payload.authType === 'oauth2' ? 'oauth2' : 'password';
+
     let password = null;
-    if (typeof payload.password === 'string' && payload.password.length) {
-      if (payload.password.length > 1024) throw new Error('密码过长');
-      password = payload.password;
-    } else if (existing) {
-      try {
-        password = store.getPassword(existing.id);
-      } catch {
-        throw new Error('无法读取已保存的密码，请重新输入');
+    let oauthData = null;
+
+    if (authType === 'oauth2') {
+      const ticket = payload.oauthTicket ? text(payload.oauthTicket, 64) : '';
+      if (ticket) {
+        const pending = pendingOAuth.get(ticket);
+        if (!pending || Date.now() - pending.createdAt > OAUTH_TICKET_TTL_MS) {
+          if (pending) pendingOAuth.delete(ticket);
+          throw new Error('OAuth 授权已过期，请重新登录');
+        }
+        if (pending.email.toLowerCase() !== email.toLowerCase()) {
+          throw new Error(`授权的账号是 ${pending.email}，与填写的邮箱地址不一致`);
+        }
+        await mail.testConnection({ email, imap, smtp, authType: 'oauth2' }, { accessToken: pending.accessToken });
+        oauthData = {
+          provider: pending.provider,
+          email: pending.email,
+          scope: pending.scope,
+          accessToken: pending.accessToken,
+          refreshToken: pending.refreshToken,
+          expiresAt: pending.expiresAt
+        };
+        pendingOAuth.delete(ticket);
+      } else if (!existing || existing.authType !== 'oauth2' || !existing.hasOAuth) {
+        throw new Error('请先完成 OAuth 授权');
       }
+    } else {
+      if (typeof payload.password === 'string' && payload.password.length) {
+        if (payload.password.length > 1024) throw new Error('密码过长');
+        password = payload.password;
+      } else if (existing && existing.authType !== 'oauth2') {
+        try {
+          password = store.getPassword(existing.id);
+        } catch {
+          throw new Error('无法读取已保存的密码，请重新输入');
+        }
+      }
+      if (!password) throw new Error('请输入密码或授权码');
+      await mail.testConnection({ email, imap, smtp }, password);
     }
-    if (!password) throw new Error('请输入密码或授权码');
-    await mail.testConnection({ email, imap, smtp }, password);
+
     const saved = store.saveAccount(
-      { id: id || undefined, email, name, imap, smtp },
-      typeof payload.password === 'string' && payload.password.length ? password : null
+      { id: id || undefined, email, name, imap, smtp, authType },
+      authType === 'password' ? password : null,
+      oauthData
     );
     mail.reset(saved.id);
     mail.watch(saved.id);
@@ -479,8 +506,9 @@ function registerIpc() {
 
   handle('folders:sync-one', (payload) => mail.syncOne(text(payload.accountId, 100)));
 
-  handle('mail:list', (payload) => {
-    const accountId = text(payload.accountId, 100);
+  handle('mail:statuses', () => mail.statusList());
+
+  handle('mail:list', (payload) => {    const accountId = text(payload.accountId, 100);
     const mailboxPath = text(payload.path, 1024);
     return mail.list({
       accountId,
@@ -714,12 +742,15 @@ function registerIpc() {
 async function boot() {
   protocol.handle('mailview', mailDocumentResponse);
   store = new Store();
-  mail = new MailService(store);
+  oauth = new OAuthService(store);
+  mail = new MailService(store, { oauth });
+  updater = new UpdateService({ store, app, send: broadcast });
   mail.onNewMail = (accountId, path, count) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('mail:push', { accountId, path, count });
     }
   };
+  mail.onStatus = (status) => broadcast('mail:status', status);
   mail.watchAll();
   buildMenu();
   registerIpc();

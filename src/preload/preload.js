@@ -19,6 +19,24 @@ function onMailPush(handler) {
   ipcRenderer.on('mail:push', mailPushListener);
 }
 
+let mailStatusListener = null;
+
+function onMailStatus(handler) {
+  if (typeof handler !== 'function') return;
+  if (mailStatusListener) ipcRenderer.removeListener('mail:status', mailStatusListener);
+  mailStatusListener = (_event, payload) => handler(payload);
+  ipcRenderer.on('mail:status', mailStatusListener);
+}
+
+let updateProgressListener = null;
+
+function onUpdateProgress(handler) {
+  if (typeof handler !== 'function') return;
+  if (updateProgressListener) ipcRenderer.removeListener('update:progress', updateProgressListener);
+  updateProgressListener = (_event, payload) => handler(payload);
+  ipcRenderer.on('update:progress', updateProgressListener);
+}
+
 contextBridge.exposeInMainWorld('dymail', {
   app: {
     info: () => call('app:info'),
@@ -28,18 +46,24 @@ contextBridge.exposeInMainWorld('dymail', {
     notify: (payload) => call('app:notify', payload)
   },
   update: {
-    check: () => call('update:check')
+    check: () => call('update:check'),
+    download: (version) => call('update:download', { version }),
+    install: () => call('update:install'),
+    cancel: () => call('update:cancel'),
+    onProgress: onUpdateProgress
   },
   accounts: {
     list: () => call('accounts:list'),
     save: (payload) => call('accounts:save', payload),
-    remove: (id) => call('accounts:remove', { id })
+    remove: (id) => call('accounts:remove', { id }),
+    oauthStart: (provider) => call('accounts:oauth-authorize', { provider })
   },
   folders: {
     sync: () => call('folders:sync'),
     syncOne: (accountId) => call('folders:sync-one', { accountId })
   },
   mail: {
+    statuses: () => call('mail:statuses'),
     list: (payload) => call('mail:list', payload),
     listUnified: (payload) => call('mail:list-unified', payload),
     listStarred: (payload) => call('mail:list-starred', payload),
@@ -54,7 +78,8 @@ contextBridge.exposeInMainWorld('dymail', {
     restore: (payload) => call('mail:restore', payload),
     purgeTrash: () => call('mail:purge-trash', {}),
     saveAttachment: (payload) => call('mail:save-attachment', payload),
-    onPush: onMailPush
+    onPush: onMailPush,
+    onStatus: onMailStatus
   },
   compose: {
     send: (payload) => call('compose:send', payload)

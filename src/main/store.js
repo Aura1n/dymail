@@ -196,6 +196,7 @@ class Store {
   }
 
   _publicAccount(account) {
+    const oauth = account.authType === 'oauth2' ? account.oauth || {} : null;
     return {
       id: account.id,
       email: account.email,
@@ -203,6 +204,11 @@ class Store {
       color: account.color,
       imap: { ...account.imap },
       smtp: { ...account.smtp },
+      authType: account.authType === 'oauth2' ? 'oauth2' : 'password',
+      oauthProvider: oauth ? oauth.provider || '' : '',
+      oauthEmail: oauth ? oauth.email || '' : '',
+      oauthExpiresAt: oauth ? Number(oauth.expiresAt) || 0 : 0,
+      hasOAuth: Boolean(oauth && oauth.refreshEnc),
       hasPassword: Boolean(account.passEnc),
       createdAt: account.createdAt
     };
@@ -227,7 +233,62 @@ class Store {
     return this._decrypt(account.passEnc);
   }
 
-  saveAccount(input, password) {
+  /* 授权令牌与密码同级别对待：只以加密形式落盘，读取时按需解密。 */
+  getOAuthRecord(id) {
+    const account = this.data.accounts.find((item) => item.id === id);
+    if (!account || account.authType !== 'oauth2' || !account.oauth) return null;
+    const read = (encoded) => {
+      if (!encoded) return '';
+      try {
+        return this._decrypt(encoded);
+      } catch {
+        return '';
+      }
+    };
+    return {
+      provider: String(account.oauth.provider || ''),
+      email: String(account.oauth.email || ''),
+      scope: String(account.oauth.scope || ''),
+      expiresAt: Number(account.oauth.expiresAt) || 0,
+      accessToken: read(account.oauth.accessEnc),
+      refreshToken: read(account.oauth.refreshEnc)
+    };
+  }
+
+  /* 刷新会换发新的 refresh token，每次都要整条覆盖，不能只更新 access token。 */
+  updateOAuth(id, tokens) {
+    const index = this.data.accounts.findIndex((item) => item.id === id);
+    if (index < 0) throw new Error('账户不存在');
+    const account = this.data.accounts[index];
+    if (account.authType !== 'oauth2') throw new Error('该账户未使用 OAuth 登录');
+    const previous = account.oauth || {};
+    const oauth = {
+      provider: String((tokens && tokens.provider) || previous.provider || ''),
+      email: String((tokens && tokens.email) || previous.email || ''),
+      scope: String((tokens && tokens.scope) || previous.scope || ''),
+      expiresAt: Math.max(0, Number(tokens && tokens.expiresAt) || 0),
+      refreshEnc: tokens && tokens.refreshToken ? this._encrypt(tokens.refreshToken) : previous.refreshEnc || '',
+      accessEnc: tokens && tokens.accessToken ? this._encrypt(tokens.accessToken) : previous.accessEnc || '',
+      authorizedAt: tokens && tokens.authorizedAt ? tokens.authorizedAt : previous.authorizedAt || new Date().toISOString()
+    };
+    this.data.accounts[index] = { ...account, oauth };
+    this._persist();
+    return this._publicAccount(this.data.accounts[index]);
+  }
+
+  _oauthRecord(input) {
+    return {
+      provider: cleanText(input.provider, 20),
+      email: cleanText(input.email, 320).trim(),
+      scope: cleanText(input.scope, 1000),
+      expiresAt: Math.max(0, Number(input.expiresAt) || 0),
+      refreshEnc: input.refreshToken ? this._encrypt(input.refreshToken) : '',
+      accessEnc: input.accessToken ? this._encrypt(input.accessToken) : '',
+      authorizedAt: new Date().toISOString()
+    };
+  }
+
+  saveAccount(input, password, oauth) {
     if (!input || typeof input !== 'object') throw new Error('账户信息无效');
     const email = cleanText(input.email, 320).trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -239,8 +300,14 @@ class Store {
     if (this.data.accounts.some((item, i) => i !== index && item.email.toLowerCase() === email.toLowerCase())) {
       throw new Error('该邮箱已添加');
     }
-    if (!password && !(existing && existing.passEnc)) {
+    const authType = input.authType === 'oauth2' ? 'oauth2' : 'password';
+    if (authType === 'password' && !password && !(existing && existing.passEnc)) {
       throw new Error('请输入密码或授权码');
+    }
+    let oauthRecord = null;
+    if (authType === 'oauth2') {
+      oauthRecord = oauth ? this._oauthRecord(oauth) : existing && existing.oauth ? existing.oauth : null;
+      if (!oauthRecord || !oauthRecord.refreshEnc) throw new Error('缺少 OAuth 授权信息，请重新登录');
     }
     const imap = cleanServer(input.imap, 'IMAP');
     const smtp = cleanServer(input.smtp, 'SMTP');
@@ -251,7 +318,10 @@ class Store {
       color: existing ? existing.color : COLORS[this.data.accounts.length % COLORS.length],
       imap,
       smtp,
-      passEnc: password ? this._encrypt(password) : existing.passEnc,
+      authType,
+      /* 切换登录方式时清掉另一种凭据，避免留下已经失效的秘密。 */
+      passEnc: authType === 'password' ? (password ? this._encrypt(password) : existing ? existing.passEnc : '') : '',
+      oauth: oauthRecord,
       createdAt: existing ? existing.createdAt : new Date().toISOString()
     };
     if (existing) {

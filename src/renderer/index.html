@@ -178,7 +178,24 @@
             <span class="field-label">提供方</span>
             <select id="account-provider"></select>
           </label>
-          <label class="field span-2">
+          <div class="field span-2" id="account-auth-method" hidden>
+            <span class="field-label">登录方式</span>
+            <div class="auth-switch">
+              <label class="auth-option">
+                <input type="radio" name="account-auth-type" value="password">
+                <span>密码 / 授权码</span>
+              </label>
+              <label class="auth-option">
+                <input type="radio" name="account-auth-type" value="oauth2">
+                <span>OAuth 授权登录</span>
+              </label>
+            </div>
+          </div>
+          <div class="oauth-panel span-2" id="account-oauth-panel" hidden>
+            <button type="button" class="btn" id="account-oauth-btn">使用 Google 登录</button>
+            <p class="field-hint" id="account-oauth-status"></p>
+          </div>
+          <label class="field span-2" id="account-password-field">
             <span class="field-label" id="account-password-label">密码或授权码</span>
             <span class="password-field">
               <input id="account-password" type="password" autocomplete="new-password">
@@ -385,7 +402,12 @@
       <div class="update-title">发现新版本</div>
       <div class="update-meta"><span id="update-from"></span><span class="update-arrow">→</span><strong id="update-to"></strong></div>
       <div class="update-notes" id="update-notes"></div>
+      <div class="update-progress" id="update-progress" hidden>
+        <div class="update-progress-track"><span id="update-progress-fill"></span></div>
+        <p class="update-progress-text" id="update-progress-text"></p>
+      </div>
       <footer class="update-foot">
+        <button type="button" class="link-btn" id="update-cancel" hidden>取消下载</button>
         <button type="button" class="link-btn" id="update-ignore">忽略此版本</button>
         <span class="update-spacer"></span>
         <button type="button" class="btn" id="update-later">以后再说</button>

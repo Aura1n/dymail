@@ -30,9 +30,11 @@ const PROVIDERS = [
     label: 'Gmail',
     imap: { host: 'imap.gmail.com', port: 993, secure: true },
     smtp: { host: 'smtp.gmail.com', port: 465, secure: true },
-    hint: 'Google 已停用账号密码登录，需填写开启两步验证后生成的 16 位应用专用密码',
+    hint: '推荐用 OAuth 授权登录，无需开启两步验证或生成应用专用密码',
     passwordLabel: '应用专用密码',
     strictPasswordFormat: /^[a-z0-9]{16}$/i,
+    oauth: 'google',
+    oauthLabel: 'Google',
     helpLabel: '如何获取应用专用密码',
     helpUrl: 'https://support.google.com/accounts/answer/185833?hl=zh-Hans'
   },
@@ -41,8 +43,10 @@ const PROVIDERS = [
     label: 'Outlook',
     imap: { host: 'outlook.office365.com', port: 993, secure: true },
     smtp: { host: 'smtp.office365.com', port: 587, secure: false },
-    hint: '微软已停用账号密码登录：需开启两步验证后生成应用专用密码',
+    hint: '推荐用 OAuth 授权登录；微软已停用账号密码登录，企业邮箱必须走 OAuth',
     passwordLabel: '应用专用密码',
+    oauth: 'microsoft',
+    oauthLabel: 'Microsoft',
     helpLabel: '如何获取应用专用密码',
     helpUrl: 'https://support.microsoft.com/zh-cn/accounts-billing/manage/how-to-get-and-use-app-passwords'
   },
@@ -208,6 +212,13 @@ const state = {
   compose: null,
   editingAccountId: null,
   accountBusy: false,
+  /* 'password' | 'oauth2'，以及本次对话框里已经完成的授权票据 */
+  accountAuth: 'password',
+  oauth: null,
+  /* accountId -> { state: connecting|online|offline|error, error } */
+  accountStatus: {},
+  updateReady: null,
+  updateDownloading: false,
   autoLaunch: false,
   settingsTab: 'accounts',
   generalNoteTimer: null,
@@ -255,6 +266,9 @@ async function init() {
 
   await loadBaseAccounts();
   subscribeMailPush();
+  subscribeMailStatus();
+  api.update.onProgress(onUpdateProgress);
+  await refreshAccountStatuses();
 
   if (DEMO) exposeDemoDebug();
 }
@@ -289,7 +303,8 @@ function cacheElements() {
     'action-restore', 'batch-restore', 'trash-purge-select',
     'show-images', 'reader-attachments', 'mail-frame', 'reader-loading', 'account-dialog', 'account-form',
     'account-title', 'account-email', 'account-name', 'account-provider', 'account-password', 'account-eye',
-    'account-password-label', 'account-password-warn', 'account-help',
+    'account-password-label', 'account-password-warn', 'account-help', 'account-password-field',
+    'account-auth-method', 'account-oauth-panel', 'account-oauth-btn', 'account-oauth-status',
     'account-hint', 'account-advanced', 'imap-host', 'imap-port', 'imap-secure', 'smtp-host', 'smtp-port',
     'smtp-secure', 'account-error', 'account-delete', 'account-submit', 'settings-dialog', 'settings-title',
     'settings-accounts', 'settings-add-account', 'refresh-select', 'signature-input', 'general-save',
@@ -301,6 +316,7 @@ function cacheElements() {
     'update-repo-link', 'update-version', 'update-skipped', 'update-reset-skip', 'update-check-now',
     'update-note', 'update-dialog', 'update-from', 'update-to', 'update-notes', 'update-ignore',
     'update-later', 'update-download', 'batch-bar', 'batch-count', 'batch-star', 'batch-unstar',
+    'update-progress', 'update-progress-fill', 'update-progress-text', 'update-cancel',
     'batch-read', 'batch-unread', 'batch-archive', 'batch-trash', 'batch-clear', 'contacts-dialog',
     'contacts-list', 'contact-form', 'contact-name', 'contact-email', 'contact-error', 'contact-new',
     'contact-delete', 'contact-submit', 'contact-pop', 'contact-search', 'contact-pop-list',
@@ -665,13 +681,16 @@ function renderSidebar() {
 
   for (const account of state.accounts) {
     const expanded = state.expanded[account.id] !== false;
+    const status = statusInfo(account.id);
+    const stateClass = status ? status.state : '';
     parts.push(`<div class="account-block">
       <button type="button" class="account-row" data-account-toggle="${escapeHtml(account.id)}" title="${escapeHtml(
-        account.email + (account.error ? `\n${account.error}` : '')
+        account.email + (status && status.state === 'error' ? `\n${status.title}` : '')
       )}">
         <span class="account-dot" style="background:${safeColor(account.color)}"></span>
         <span class="account-name">${escapeHtml(account.name || account.email)}</span>
-        ${account.error ? '<span class="account-warning"></span>' : ''}
+        ${status ? `<span class="account-state is-${escapeHtml(stateClass)}" title="${escapeHtml(status.title)}"></span>` : ''}
+        ${status && status.state === 'error' ? `<span class="account-retry" data-retry-account="${escapeHtml(account.id)}" title="重试连接">重试</span>` : ''}
         <span class="account-chevron">${icon(expanded ? 'chevron-down' : 'chevron')}</span>
       </button>
     `);
@@ -1415,11 +1434,24 @@ function startAccountSync(manual) {
 
   state.syncing = true;
   setSyncUi(true);
+  const syncing = {};
+  for (const account of state.accounts) {
+    syncing[account.id] = { accountId: account.id, state: 'syncing', error: '', at: Date.now() };
+  }
+  state.accountStatus = { ...state.accountStatus, ...syncing };
+  renderSidebar();
   const promise = (async () => {
     let succeeded = false;
     try {
       const list = await api.folders.sync();
       state.accounts = (Array.isArray(list) ? list : []).map(normalizeAccount);
+      const nextStatus = {};
+      for (const account of state.accounts) {
+        nextStatus[account.id] = account.error
+          ? { accountId: account.id, state: 'error', error: account.error, at: Date.now() }
+          : { accountId: account.id, state: 'online', error: '', at: Date.now() };
+      }
+      state.accountStatus = nextStatus;
       state.globalSyncError = null;
       succeeded = true;
       await detectNewMail();
@@ -1552,6 +1584,76 @@ async function applyMailPush() {
   renderHeader();
   updateListBanner();
   if (!document.hidden) await silentReloadList();
+}
+
+/* ------------------------------------------------------------------ */
+/* Connection status                                                  */
+/* ------------------------------------------------------------------ */
+
+function subscribeMailStatus() {
+  api.mail.onStatus((status) => applyAccountStatus(status));
+}
+
+function applyAccountStatus(status) {
+  if (!status || !status.accountId) return;
+  const previous = state.accountStatus[status.accountId];
+  if (previous && previous.state === status.state && previous.error === (status.error || '')) return;
+  state.accountStatus = { ...state.accountStatus, [status.accountId]: status };
+  renderSidebar();
+}
+
+async function refreshAccountStatuses() {
+  try {
+    const list = await api.mail.statuses();
+    const next = {};
+    for (const item of Array.isArray(list) ? list : []) {
+      if (item && item.accountId) next[item.accountId] = item;
+    }
+    state.accountStatus = next;
+    renderSidebar();
+  } catch {
+    /* 状态只是辅助信息，取不到不影响收发信 */
+  }
+}
+
+function statusInfo(accountId) {
+  const status = state.accountStatus[accountId];
+  if (!status) return null;
+  const labels = {
+    connecting: '正在连接',
+    syncing: '正在同步',
+    online: '已连接',
+    offline: '离线，正在自动重试'
+  };
+  return {
+    state: status.state,
+    title: status.error || labels[status.state] || '状态未知'
+  };
+}
+
+async function retryAccount(accountId) {
+  const account = accountById(accountId);
+  if (!account) return;
+  applyAccountStatus({ accountId, state: 'connecting', error: '' });
+  try {
+    const updated = await api.folders.syncOne(accountId);
+    const index = state.accounts.findIndex((item) => item.id === accountId);
+    if (index >= 0 && updated) state.accounts[index] = normalizeAccount(updated);
+    applyAccountStatus({
+      accountId,
+      state: updated && updated.error ? 'error' : 'online',
+      error: updated && updated.error ? updated.error : ''
+    });
+    renderSidebar();
+    renderHeader();
+    updateListBanner();
+    if (state.view.kind !== 'folder' || state.view.accountId === accountId) {
+      await loadView({ preserveReader: true, keepScroll: true });
+    }
+  } catch (err) {
+    applyAccountStatus({ accountId, state: 'error', error: err && err.message ? err.message : '重试失败' });
+    toast(err && err.message ? err.message : '重试失败');
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2855,6 +2957,74 @@ function setServerFields(imap, smtp) {
   els.smtpSecure.checked = smtp.secure !== false;
 }
 
+function oauthProviderOf(provider) {
+  return provider && provider.oauth ? provider.oauth : '';
+}
+
+/* 授权票据只在本次对话框内有效；关闭或切换提供方后必须重新授权。 */
+function clearOAuthTicket() {
+  state.oauth = null;
+  els.accountOauthStatus.textContent = '';
+  const account = state.editingAccountId ? accountById(state.editingAccountId) : null;
+  els.accountEmail.readOnly = Boolean(account && account.authType === 'oauth2');
+}
+
+function setAccountAuth(type) {
+  state.accountAuth = type === 'oauth2' ? 'oauth2' : 'password';
+  const oauthMode = state.accountAuth === 'oauth2';
+  els.accountPasswordField.hidden = oauthMode;
+  els.accountOauthPanel.hidden = !oauthMode;
+  for (const input of document.querySelectorAll('input[name="account-auth-type"]')) {
+    input.checked = input.value === state.accountAuth;
+  }
+  const account = state.editingAccountId ? accountById(state.editingAccountId) : null;
+  els.accountEmail.readOnly = Boolean(state.oauth) || Boolean(account && account.authType === 'oauth2');
+  if (!oauthMode) return;
+  const provider = providerById(els.accountProvider.value);
+  const authorized = Boolean(state.oauth) || Boolean(account && account.authType === 'oauth2' && account.hasOAuth);
+  els.accountOauthBtn.textContent = authorized
+    ? `重新授权（${provider.oauthLabel || provider.label}）`
+    : `使用 ${provider.oauthLabel || provider.label} 登录`;
+  if (state.oauth) {
+    els.accountOauthStatus.textContent = `已授权：${state.oauth.email}`;
+  } else if (account && account.authType === 'oauth2') {
+    els.accountOauthStatus.textContent = `已授权：${account.oauthEmail || account.email}`;
+  } else {
+    els.accountOauthStatus.textContent = '将在系统浏览器中打开授权页，完成后自动返回';
+  }
+}
+
+function setOAuthBusy(busy) {
+  state.oauthPending = Boolean(busy);
+  els.accountOauthBtn.disabled = Boolean(busy);
+}
+
+async function startAccountOAuth() {
+  if (state.accountBusy || state.oauthPending) return;
+  const provider = providerById(els.accountProvider.value);
+  const oauthKey = oauthProviderOf(provider);
+  if (!oauthKey) {
+    accountError('该提供方不支持 OAuth 登录');
+    return;
+  }
+  accountError('');
+  setOAuthBusy(true);
+  els.accountOauthStatus.textContent = '正在打开浏览器，请完成授权…';
+  try {
+    const result = await api.accounts.oauthStart(oauthKey);
+    state.oauth = { ticket: result.ticket, email: result.email, provider: oauthKey };
+    els.accountEmail.value = result.email;
+    if (!els.accountName.value.trim() && result.name) els.accountName.value = result.name;
+    setAccountAuth('oauth2');
+  } catch (err) {
+    state.oauth = null;
+    setAccountAuth('oauth2');
+    accountError(err && err.message ? err.message : '授权失败');
+  } finally {
+    setOAuthBusy(false);
+  }
+}
+
 function updatePasswordFormatHint() {
   const provider = providerById(els.accountProvider.value);
   const value = els.accountPassword.value.replace(/\s+/g, '');
@@ -2869,6 +3039,8 @@ function applyProviderToForm(provider, { fillServers = true, revealAdvanced = tr
   if (fillServers && provider.id !== 'custom') {
     setServerFields(provider.imap, provider.smtp);
   }
+  const oauthKey = oauthProviderOf(provider);
+  els.accountAuthMethod.hidden = !oauthKey;
   els.accountHint.textContent = provider.hint || '';
   els.accountPasswordLabel.textContent = provider.passwordLabel || '密码或授权码';
   if (!state.editingAccountId) els.accountPassword.placeholder = provider.passwordLabel || '密码或授权码';
@@ -2877,6 +3049,7 @@ function applyProviderToForm(provider, { fillServers = true, revealAdvanced = tr
   els.accountHelp.dataset.url = provider.helpUrl || '';
   updatePasswordFormatHint();
   if (revealAdvanced && provider.id === 'custom') els.accountAdvanced.open = true;
+  if (!oauthKey && state.accountAuth === 'oauth2') setAccountAuth('password');
 }
 
 function setAccountBusy(busy) {
@@ -2899,14 +3072,19 @@ function accountError(message) {
 function openAccountDialog(accountId) {
   const account = accountId ? accountById(accountId) : null;
   state.editingAccountId = account ? account.id : null;
+  state.oauth = null;
+  state.oauthPending = false;
+  state.accountAuth = 'password';
   els.accountTitle.textContent = account ? '编辑账户' : '添加账户';
   els.accountEmail.value = account ? account.email : '';
   els.accountName.value = account ? account.name || '' : '';
+  els.accountEmail.readOnly = Boolean(account && account.authType === 'oauth2');
   els.accountPassword.value = '';
   els.accountPassword.type = 'password';
   els.accountEye.innerHTML = icon('eye');
   els.accountEye.title = '显示密码';
   els.accountPassword.placeholder = account ? '留空则不修改' : '密码或授权码';
+  els.accountOauthStatus.textContent = '';
   els.accountDelete.hidden = !account;
   els.accountError.hidden = true;
   els.accountError.textContent = '';
@@ -2922,6 +3100,7 @@ function openAccountDialog(accountId) {
     setServerFields({ host: '', port: '', secure: true }, { host: '', port: '', secure: true });
     applyProviderToForm(provider, { fillServers: false });
   }
+  setAccountAuth(account && account.authType === 'oauth2' ? 'oauth2' : 'password');
 
   setAccountBusy(false);
   if (els.accountDialog.open) els.accountDialog.close();
@@ -2949,21 +3128,40 @@ function gatherAccountForm() {
   const smtpPort = Number(els.smtpPort.value);
   if (!Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535) throw new Error('IMAP 端口无效');
   if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) throw new Error('SMTP 端口无效');
+  const existing = state.editingAccountId ? accountById(state.editingAccountId) : null;
+  const imap = { host: imapHost, port: imapPort, secure: els.imapSecure.checked };
+  const smtp = { host: smtpHost, port: smtpPort, secure: els.smtpSecure.checked };
+  const base = {
+    id: state.editingAccountId || undefined,
+    email,
+    name: els.accountName.value.trim(),
+    imap,
+    smtp
+  };
+
+  if (state.accountAuth === 'oauth2') {
+    const keepsExisting = Boolean(existing && existing.authType === 'oauth2' && existing.hasOAuth);
+    if (!state.oauth && !keepsExisting) throw new Error('请先点击上方按钮完成授权');
+    return {
+      ...base,
+      authType: 'oauth2',
+      oauthTicket: state.oauth ? state.oauth.ticket : undefined
+    };
+  }
+
   // Google shows app passwords in four-character groups; the spaces are not part
   // of the secret and IMAP login fails when they are sent along with it.
   const provider = providerById(els.accountProvider.value);
   const password = provider.strictPasswordFormat
     ? els.accountPassword.value.replace(/\s+/g, '')
     : els.accountPassword.value;
-  const existing = state.editingAccountId ? accountById(state.editingAccountId) : null;
-  if (!password && !(existing && existing.hasPassword)) throw new Error('请输入密码或授权码');
+  if (!password && !(existing && existing.authType !== 'oauth2' && existing.hasPassword)) {
+    throw new Error('请输入密码或授权码');
+  }
   return {
-    id: state.editingAccountId || undefined,
-    email,
-    name: els.accountName.value.trim(),
-    password: password || undefined,
-    imap: { host: imapHost, port: imapPort, secure: els.imapSecure.checked },
-    smtp: { host: smtpHost, port: smtpPort, secure: els.smtpSecure.checked }
+    ...base,
+    authType: 'password',
+    password: password || undefined
   };
 }
 
@@ -3045,6 +3243,10 @@ async function removeAccountById(id) {
 
 async function reloadAfterAccountChange() {
   await refreshAccounts({ manual: false, force: true });
+  const alive = new Set(state.accounts.map((account) => account.id));
+  state.accountStatus = Object.fromEntries(
+    Object.entries(state.accountStatus).filter(([accountId]) => alive.has(accountId))
+  );
   const next = normalizeView(state.view) || defaultView();
   const changed = !sameView(next, state.view);
   state.view = next;
@@ -3106,10 +3308,14 @@ function renderSettingsAccounts() {
   els.settingsAccounts.innerHTML = state.accounts
     .map((account) => {
       const color = safeColor(account.color);
+      const authBadge =
+        account.authType === 'oauth2'
+          ? `<span class="account-badge" title="OAuth 授权登录">OAuth</span>`
+          : '';
       return `<div class="settings-account">
         <span class="avatar" style="${avatarStyle(color)}">${escapeHtml(initialOf(account.name || account.email))}</span>
         <span class="settings-account-info">
-          <span class="settings-account-name">${escapeHtml(account.name || account.email)}</span>
+          <span class="settings-account-name">${escapeHtml(account.name || account.email)}${authBadge}</span>
           ${account.name ? `<span class="settings-account-email">${escapeHtml(account.email)}</span>` : ''}
         </span>
         <button type="button" class="icon-btn" data-edit-account="${escapeHtml(account.id)}" title="编辑账户">${icon('edit')}</button>
@@ -3310,27 +3516,119 @@ async function checkForUpdate({ silent = false } = {}) {
   }
 }
 
+function setUpdateProgress(visible, percent, text) {
+  els.updateProgress.hidden = !visible;
+  if (!visible) return;
+  els.updateProgressFill.style.width = `${Math.max(0, Math.min(100, percent || 0))}%`;
+  els.updateProgressText.textContent = text || '';
+}
+
+function applyUpdateReady(info) {
+  state.updateReady = info || null;
+  if (!info) return;
+  setUpdateProgress(
+    true,
+    100,
+    `${info.verified ? '下载完成，已校验' : '下载完成'}（${formatSize(info.size)}）`
+  );
+  els.updateDownload.textContent = '重启并安装';
+  els.updateDownload.disabled = false;
+  els.updateIgnore.hidden = true;
+  els.updateCancel.hidden = true;
+}
+
+function onUpdateProgress(payload) {
+  if (!payload || !state.updateOffer) return;
+  if (payload.phase === 'downloading') {
+    const total = Number(payload.total) || 0;
+    const received = Number(payload.received) || 0;
+    const text = total
+      ? `正在下载 ${formatSize(received)} / ${formatSize(total)}`
+      : `正在下载 ${formatSize(received)}`;
+    setUpdateProgress(true, Number(payload.percent) || 0, text);
+    return;
+  }
+  if (payload.phase === 'ready') {
+    setUpdateProgress(true, 100, payload.verified ? '下载完成，已校验' : '下载完成');
+    return;
+  }
+  if (payload.phase === 'installing') {
+    setUpdateProgress(true, 100, '正在退出并安装，完成后会打开新版本');
+    els.updateDownload.disabled = true;
+  }
+}
+
+async function startUpdateDownload() {
+  const offer = state.updateOffer;
+  if (!offer || state.updateDownloading) return;
+  state.updateDownloading = true;
+  els.updateDownload.disabled = true;
+  els.updateDownload.textContent = '下载中…';
+  els.updateIgnore.disabled = true;
+  els.updateCancel.hidden = false;
+  setUpdateProgress(true, 0, '正在连接下载地址…');
+  try {
+    const info = await api.update.download(offer.latest);
+    state.updateDownloading = false;
+    applyUpdateReady(info);
+  } catch (err) {
+    state.updateDownloading = false;
+    els.updateDownload.disabled = false;
+    els.updateDownload.textContent = '重试下载';
+    els.updateIgnore.disabled = false;
+    els.updateCancel.hidden = true;
+    setUpdateProgress(true, 0, err && err.message ? err.message : '下载失败');
+  }
+}
+
+async function installUpdate() {
+  try {
+    await api.update.install();
+  } catch (err) {
+    toast(err && err.message ? err.message : '安装失败');
+  }
+}
+
+async function cancelUpdateDownload() {
+  try {
+    await api.update.cancel();
+  } catch {}
+  state.updateDownloading = false;
+  els.updateDownload.disabled = false;
+  els.updateDownload.textContent = '下载更新';
+  els.updateIgnore.disabled = false;
+  els.updateCancel.hidden = true;
+  setUpdateProgress(false, 0, '');
+}
+
 function showUpdateDialog(result) {
   state.updateOffer = result;
   els.updateFrom.textContent = result.current;
   els.updateTo.textContent = result.latest;
   els.updateNotes.textContent = result.notes || '';
+  els.updateDownload.disabled = false;
+  els.updateDownload.textContent = '下载更新';
+  els.updateIgnore.hidden = false;
+  els.updateIgnore.disabled = false;
+  els.updateCancel.hidden = true;
+  setUpdateProgress(false, 0, '');
+  if (state.updateReady && state.updateReady.version === result.latest) applyUpdateReady(state.updateReady);
   if (!els.updateDialog.open) els.updateDialog.showModal();
 }
 
 async function dismissUpdateDialog(action) {
+  if (state.updateDownloading) return;
   const offer = state.updateOffer;
   els.updateDialog.close();
   if (!offer) return;
   try {
-    if (action === 'download') await api.app.open(offer.url || offer.page);
     if (action === 'ignore') {
       state.settings = await api.settings.update({ updateSkipped: offer.latest });
       renderSettingsUpdate();
       toast(`不再提示 ${offer.latest}`);
     }
   } catch (err) {
-    toast(err && err.message ? err.message : '打开下载页失败');
+    toast(err && err.message ? err.message : '操作失败');
   }
 }
 
@@ -3673,6 +3971,12 @@ function bindEvents() {
       openContactsDialog();
       return;
     }
+    const retry = event.target.closest('[data-retry-account]');
+    if (retry) {
+      event.stopPropagation();
+      retryAccount(retry.dataset.retryAccount);
+      return;
+    }
     const toggle = event.target.closest('[data-account-toggle]');
     if (toggle) {
       const id = toggle.dataset.accountToggle;
@@ -3799,6 +4103,8 @@ function bindAccountDialog() {
   });
   els.accountDialog.addEventListener('close', () => {
     if (!state.accountBusy) state.editingAccountId = null;
+    state.oauth = null;
+    state.oauthPending = false;
   });
 
   els.accountForm.addEventListener('submit', (event) => {
@@ -3808,8 +4114,17 @@ function bindAccountDialog() {
 
   els.accountProvider.addEventListener('change', () => {
     const provider = providerById(els.accountProvider.value);
+    const wasOAuth = state.accountAuth === 'oauth2';
+    clearOAuthTicket();
     applyProviderToForm(provider);
+    if (wasOAuth && oauthProviderOf(provider)) setAccountAuth('oauth2');
   });
+
+  for (const input of document.querySelectorAll('input[name="account-auth-type"]')) {
+    input.addEventListener('change', () => setAccountAuth(input.value));
+  }
+
+  els.accountOauthBtn.addEventListener('click', startAccountOAuth);
 
   els.accountPassword.addEventListener('input', updatePasswordFormatHint);
 
@@ -3870,7 +4185,15 @@ function bindSettingsDialog() {
   });
   els.updateIgnore.addEventListener('click', () => dismissUpdateDialog('ignore'));
   els.updateLater.addEventListener('click', () => dismissUpdateDialog('later'));
-  els.updateDownload.addEventListener('click', () => dismissUpdateDialog('download'));
+  els.updateDownload.addEventListener('click', () => {
+    const ready = state.updateReady && state.updateOffer && state.updateReady.version === state.updateOffer.latest;
+    if (ready) installUpdate();
+    else startUpdateDownload();
+  });
+  els.updateCancel.addEventListener('click', cancelUpdateDownload);
+  els.updateDialog.addEventListener('cancel', (event) => {
+    if (state.updateDownloading) event.preventDefault();
+  });
   els.themeOptions.addEventListener('click', (event) => {
     const tile = event.target.closest('[data-theme-choice]');
     if (!tile) return;

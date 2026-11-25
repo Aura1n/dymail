@@ -11,8 +11,14 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-icon.ps1 && node scripts/make-ico.js",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder --win portable nsis"
+    "test": "node scripts/test.js",
+    "test:ui": "node scripts/run-ui-check.js",
+    "pack": "node scripts/build.js dir",
+    "build:dir": "node scripts/build.js dir",
+    "build:portable": "node scripts/build.js portable",
+    "build:setup": "node scripts/build.js setup",
+    "dist": "node scripts/build.js all",
+    "clean": "node scripts/clean.js"
   },
   "dependencies": {
     "imapflow": "2.10.0",

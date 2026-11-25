@@ -107,9 +107,12 @@ function friendlyError(err, prefix, account) {
   const lower = message.toLowerCase();
   let text = '';
   if (isAuthFailure(err)) {
-    text = isGoogleMail(account)
-      ? 'Gmail 不接受账号密码：请在 Google 账号开启两步验证，再生成 16 位「应用专用密码」填入密码框；企业或学校域名通常只能改用 OAuth 登录'
-      : '邮箱或密码不正确，或需要应用授权码';
+    text =
+      account && account.authType === 'oauth2'
+        ? 'OAuth 授权已失效，请在账户设置中重新授权'
+        : isGoogleMail(account)
+          ? 'Gmail 不接受账号密码：请在 Google 账号开启两步验证，再生成 16 位「应用专用密码」填入密码框；企业或学校域名通常只能改用 OAuth 登录'
+          : '邮箱或密码不正确，或需要应用授权码';
   } else if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || lower.includes('getaddrinfo')) {
     text = '无法解析邮件服务器地址';
   } else if (code === 'ECONNREFUSED') {
@@ -204,12 +207,39 @@ const IDLE_AUTO_DELAY_MS = 1000;
 class MailService {
   constructor(store, options = {}) {
     this.store = store;
+    this.oauth = options.oauth || null;
     this.sessions = new Map();
     this.parseCache = new Map();
     this.watchers = new Map();
     this.onNewMail = null;
+    /* 每个账户最近的连接状态，供渲染层画连接指示灯。 */
+    this.statuses = new Map();
+    this.onStatus = null;
     this.idleRetryMs =
       Array.isArray(options.idleRetryMs) && options.idleRetryMs.length ? options.idleRetryMs : IDLE_RETRY_MS;
+  }
+
+  /* only online/offline/error/connecting are meaningful to the sidebar; identical
+     repeats are suppressed so a reconnect loop does not flood the renderer. */
+  _setStatus(accountId, state, error = '') {
+    const previous = this.statuses.get(accountId);
+    const next = {
+      accountId,
+      state,
+      error: error ? String(error).slice(0, 400) : '',
+      at: Date.now()
+    };
+    if (previous && previous.state === next.state && previous.error === next.error) return;
+    this.statuses.set(accountId, next);
+    if (typeof this.onStatus === 'function') {
+      try {
+        this.onStatus(next);
+      } catch {}
+    }
+  }
+
+  statusList() {
+    return [...this.statuses.values()];
   }
 
   _session(accountId) {
@@ -250,6 +280,7 @@ class MailService {
     this.unwatch(account.id);
     const state = { stopped: false, client: null, retry: 0, timer: null };
     this.watchers.set(account.id, state);
+    this._setStatus(account.id, 'connecting');
     this._watchLoop(account, state);
   }
 
@@ -289,18 +320,19 @@ class MailService {
 
   async _watchLoop(account, state) {
     if (state.stopped) return;
-    let pass = null;
+    let auth = null;
     try {
-      pass = this.store.getPassword(account.id);
-    } catch {}
-    if (!pass) {
+      auth = await this._authFor(account);
+    } catch (err) {
+      /* 授权彻底失效时停止重试，避免反复失败把账号锁掉；等用户重新授权后再启动。 */
+      if (err && err.message && err.message.includes('重新授权')) return;
       this._watchRetry(account, state);
       return;
     }
     let client;
     try {
       client = new ImapFlow({
-        ...this._clientOptions(account, pass),
+        ...this._clientOptions(account, auth),
         autoIdleDelay: IDLE_AUTO_DELAY_MS,
         maxIdleTime: IDLE_MAX_IDLE_MS
       });
@@ -312,6 +344,7 @@ class MailService {
     client.on('error', () => {});
     client.on('close', () => {
       if (state.client === client) state.client = null;
+      if (!state.stopped) this._setStatus(account.id, 'offline');
       this._watchRetry(account, state);
     });
     client.on('exists', (data) => {
@@ -328,15 +361,18 @@ class MailService {
       await client.connect();
       await client.mailboxOpen('INBOX');
       state.retry = 0;
+      this._setStatus(account.id, 'online');
     } catch (err) {
       if (state.client === client) state.client = null;
       try {
         client.close();
       } catch {}
       if (isAuthFailure(err)) {
+        this._setStatus(account.id, 'error', friendlyError(err, '', account));
         this.unwatch(account.id);
         return;
       }
+      this._setStatus(account.id, 'offline');
       this._watchRetry(account, state);
     }
   }
@@ -361,6 +397,7 @@ class MailService {
         error: null
       };
     } catch (err) {
+      this._setStatus(account.id, 'error', friendlyError(err, '', account));
       const session = this.sessions.get(account.id);
       const cached = (session && (session.lastStatus || session.folders)) || [];
       return {
@@ -374,6 +411,7 @@ class MailService {
 
   reset(accountId) {
     this.unwatch(accountId);
+    this._setStatus(accountId, 'offline');
     const session = this.sessions.get(accountId);
     if (!session) return;
     if (session.client) {
@@ -396,12 +434,31 @@ class MailService {
     this.sessions.clear();
   }
 
-  _clientOptions(account, pass) {
+  /* 统一解析登录凭据：OAuth 账户取（必要时刷新）访问令牌，其余账户读加密密码。 */
+  async _authFor(account) {
+    if (account.authType === 'oauth2') {
+      if (!this.oauth) throw new Error('OAuth 登录模块不可用');
+      const accessToken = await this.oauth.accessToken(account.id);
+      return { user: account.email, accessToken };
+    }
+    let pass;
+    try {
+      pass = this.store.getPassword(account.id);
+    } catch {
+      throw new Error('无法读取账户密码');
+    }
+    if (!pass) throw new Error('账户缺少密码');
+    return { user: account.email, pass };
+  }
+
+  _clientOptions(account, auth) {
     return {
       host: account.imap.host,
       port: account.imap.port,
       secure: account.imap.secure,
-      auth: { user: account.email, pass },
+      auth: auth.accessToken
+        ? { user: account.email, accessToken: auth.accessToken }
+        : { user: account.email, pass: auth.pass },
       logger: false,
       connectionTimeout: 20000,
       greetingTimeout: 20000,
@@ -409,13 +466,15 @@ class MailService {
     };
   }
 
-  _transport(account, pass) {
+  _transport(account, auth) {
     return nodemailer.createTransport({
       host: account.smtp.host,
       port: account.smtp.port,
       secure: account.smtp.secure,
       requireTLS: !account.smtp.secure,
-      auth: { user: account.email, pass },
+      auth: auth.accessToken
+        ? { type: 'OAuth2', user: account.email, accessToken: auth.accessToken }
+        : { user: account.email, pass: auth.pass },
       connectionTimeout: 20000,
       greetingTimeout: 20000,
       socketTimeout: 60000
@@ -430,30 +489,38 @@ class MailService {
       } catch {}
       session.client = null;
     }
-    let pass;
-    try {
-      pass = this.store.getPassword(account.id);
-    } catch {
-      throw new Error('无法读取账户密码');
-    }
-    if (!pass) throw new Error('账户缺少密码');
-    const client = new ImapFlow(this._clientOptions(account, pass));
+    const auth = await this._authFor(account);
+    const client = new ImapFlow(this._clientOptions(account, auth));
     client.on('error', () => {});
     client.on('close', () => {
       if (session.client === client) session.client = null;
     });
-    await client.connect();
+    try {
+      await client.connect();
+    } catch (err) {
+      this._setStatus(
+        account.id,
+        isAuthFailure(err) ? 'error' : 'offline',
+        isAuthFailure(err) ? friendlyError(err, '', account) : ''
+      );
+      throw err;
+    }
     session.client = client;
+    this._setStatus(account.id, 'online');
     return client;
   }
 
-  async testConnection(config, pass) {
+  async testConnection(config, credential) {
     const account = {
       email: config.email,
       imap: config.imap,
-      smtp: config.smtp
+      smtp: config.smtp,
+      authType: config.authType === 'oauth2' ? 'oauth2' : 'password'
     };
-    const client = new ImapFlow(this._clientOptions(account, pass));
+    const auth =
+      typeof credential === 'string' ? { pass: credential } : credential || {};
+    if (!auth.accessToken && !auth.pass) throw new Error('缺少登录凭据');
+    const client = new ImapFlow(this._clientOptions(account, auth));
     client.on('error', () => {});
     let imapError = null;
     try {
@@ -470,7 +537,7 @@ class MailService {
     }
     if (imapError) throw new Error(friendlyError(imapError, 'IMAP：', account));
 
-    const transport = this._transport(account, pass);
+    const transport = this._transport(account, auth);
     try {
       await transport.verify();
     } catch (err) {
@@ -552,6 +619,7 @@ class MailService {
             error: null
           };
         } catch (err) {
+          this._setStatus(account.id, 'error', friendlyError(err, '', account));
           const session = this.sessions.get(account.id);
           const cached = (session && (session.lastStatus || session.folders)) || [];
           return {
@@ -1150,13 +1218,7 @@ class MailService {
         content
       });
     }
-    let pass;
-    try {
-      pass = this.store.getPassword(account.id);
-    } catch {
-      throw new Error('无法读取账户密码');
-    }
-    if (!pass) throw new Error('账户缺少密码');
+    const auth = await this._authFor(account);
     const inReplyTo = cleanText(input.inReplyTo, 2000).replace(/[\r\n]+/g, ' ');
     const references = cleanText(input.references, 20000).replace(/[\r\n]+/g, ' ');
     const mailOptions = {
@@ -1177,7 +1239,7 @@ class MailService {
     } catch (err) {
       throw new Error(friendlyError(err, '', account));
     }
-    const transport = this._transport(account, pass);
+    const transport = this._transport(account, auth);
     let info;
     try {
       info = await transport.sendMail({

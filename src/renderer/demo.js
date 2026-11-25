@@ -591,7 +591,11 @@ function accountView(account) {
     color: account.color,
     imap: account.imap,
     smtp: account.smtp,
-    hasPassword: true,
+    authType: account.authType || 'password',
+    oauthProvider: account.authType === 'oauth2' ? account.oauthProvider || '' : '',
+    oauthEmail: account.authType === 'oauth2' ? account.email : '',
+    hasOAuth: account.authType === 'oauth2',
+    hasPassword: account.authType !== 'oauth2',
     createdAt: account.createdAt,
     folders,
     draftCount: drafts.filter((draft) => draft.accountId === account.id).length,
@@ -662,6 +666,7 @@ export function createDemoApi() {
           existing.name = String(payload.name || '');
           existing.imap = payload.imap || existing.imap;
           existing.smtp = payload.smtp || existing.smtp;
+          existing.authType = payload.authType === 'oauth2' ? 'oauth2' : 'password';
           return accountView(existing);
         }
         const colors = ['#8e5cf7', '#00a3a3', '#e5484d', '#d6409f'];
@@ -672,11 +677,20 @@ export function createDemoApi() {
           color: colors[accounts.length % colors.length],
           imap: payload.imap,
           smtp: payload.smtp,
+          authType: payload.authType === 'oauth2' ? 'oauth2' : 'password',
           createdAt: new Date().toISOString()
         };
         accounts.push(account);
         boxes[account.id] = { inbox: [], sent: [], junk: [], trash: [], archive: [] };
         return accountView(account);
+      },
+      oauthStart: async (provider) => {
+        await wait(200);
+        return {
+          ticket: makeId('oauth'),
+          email: provider === 'microsoft' ? 'demo@outlook.com' : 'demo@gmail.com',
+          name: '演示用户'
+        };
       },
       remove: async (id) => {
         await wait(120);
@@ -966,7 +980,9 @@ export function createDemoApi() {
       },
       onPush: (handler) => {
         demoPushHandler = handler;
-      }
+      },
+      statuses: async () => [],
+      onStatus: () => {}
     },
     compose: {
       send: async (payload) => {
@@ -1155,7 +1171,17 @@ export function createDemoApi() {
           page: `https://github.com/${settings.updateRepo}/releases`,
           checkedAt: Date.now()
         };
-      }
+      },
+      download: async (version) => {
+        await wait(700);
+        return { version: String(version), size: 111552409, name: `Dymail-${version}.exe`, verified: true };
+      },
+      install: async () => {
+        await wait(300);
+        return true;
+      },
+      cancel: async () => true,
+      onProgress: () => {}
     },
 
     dialog: {
