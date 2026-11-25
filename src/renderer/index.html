@@ -19,7 +19,7 @@
       <div class="titlebar-main">
         <div class="searchfield" id="search-field">
           <span class="search-icon" data-icon="search"></span>
-          <input id="search-input" type="search" placeholder="搜索" autocomplete="off" spellcheck="false" aria-label="搜索邮件">
+          <input id="search-input" type="search" placeholder="搜索邮件" autocomplete="off" spellcheck="false" aria-label="搜索邮件">
           <button class="search-clear" id="search-clear" type="button" title="清除" hidden></button>
         </div>
         <div class="titlebar-actions">
@@ -52,6 +52,9 @@
             <span class="view-count" id="view-count"></span>
           </div>
           <div class="list-tools">
+            <button type="button" class="icon-btn" id="thread-toggle" title="会话视图" aria-pressed="false">
+              <span data-icon="thread"></span>
+            </button>
             <button type="button" class="icon-btn" id="select-all" title="全选" aria-label="全选">
               <span data-icon="selectAll"></span>
             </button>
@@ -110,6 +113,7 @@
                   <span class="reader-date" id="reader-date"></span>
                 </div>
                 <div class="reader-recipients" id="reader-recipients"></div>
+                <div class="reader-thread" id="reader-thread" hidden></div>
               </div>
               <div class="reader-actions">
                 <button type="button" class="icon-btn" id="action-star" title="星标">
@@ -154,6 +158,26 @@
           </div>
           <div class="reader-loading" id="reader-loading" hidden><span class="spinner"></span></div>
         </div>
+
+        <section class="scheduled-detail" id="scheduled-detail" hidden></section>
+      </section>
+
+      <section class="contacts-view" id="contacts-view" hidden aria-label="联系人">
+        <div class="contacts-view-list">
+          <header class="list-head contacts-view-head">
+            <div class="list-heading">
+              <h1>联系人</h1>
+              <span class="view-count" id="contacts-view-count"></span>
+            </div>
+            <div class="list-tools">
+              <button type="button" class="btn primary contacts-new-btn" id="contact-new">
+                <span data-icon="plus"></span><span>新建</span>
+              </button>
+            </div>
+          </header>
+          <div class="contacts-view-body" id="contacts-view-list"></div>
+        </div>
+        <section class="contact-detail" id="contact-detail"></section>
       </section>
     </div>
   </div>
@@ -238,44 +262,13 @@
     </form>
   </dialog>
 
-  <dialog class="sheet contacts-sheet" id="contacts-dialog">
-    <div class="contacts-layout">
-      <div class="contacts-side">
-        <header class="dialog-head">
-          <h2>联系人</h2>
-          <button type="button" class="icon-btn" data-close="contacts" title="关闭"><span data-icon="close"></span></button>
-        </header>
-        <div class="contacts-list" id="contacts-list"></div>
-        <footer class="contacts-side-foot">
-          <button type="button" class="btn" id="contact-new">新建</button>
-        </footer>
-      </div>
-      <form class="contacts-form" id="contact-form" novalidate>
-        <label class="field">
-          <span class="field-label">姓名</span>
-          <input id="contact-name" type="text" autocomplete="off">
-        </label>
-        <label class="field">
-          <span class="field-label">邮箱地址</span>
-          <input id="contact-email" type="text" inputmode="email" autocomplete="off" spellcheck="false">
-        </label>
-        <p class="field-hint">联系人保存在 %APPDATA%\Dymail\contacts.json，可直接编辑该文件。</p>
-        <p class="form-error" id="contact-error" hidden></p>
-        <footer class="dialog-foot">
-          <button type="button" class="btn danger-ghost" id="contact-delete" hidden>删除</button>
-          <span class="spacer"></span>
-          <button type="submit" class="btn primary" id="contact-submit">保存</button>
-        </footer>
-      </form>
-    </div>
-  </dialog>
-
   <dialog class="sheet settings-sheet" id="settings-dialog">
     <div class="settings-layout">
       <nav class="settings-nav">
         <div class="settings-heading">设置</div>
         <button type="button" class="settings-tab is-active" data-tab="accounts">账户</button>
         <button type="button" class="settings-tab" data-tab="general">常规</button>
+        <button type="button" class="settings-tab" data-tab="rules">规则与黑名单</button>
         <button type="button" class="settings-tab" data-tab="appearance">外观</button>
         <button type="button" class="settings-tab" data-tab="update">更新</button>
       </nav>
@@ -342,6 +335,66 @@
             <button type="button" class="btn primary" id="general-save">保存</button>
             <span class="settings-note" id="general-note"></span>
           </footer>
+        </section>
+        <section class="settings-panel" data-panel="rules" hidden>
+          <div class="settings-scroll">
+            <div class="settings-section-head">
+              <div>
+                <div class="setting-label">过滤器</div>
+                <p class="setting-sub">对保存规则之后收到的新邮件生效，同一封邮件只处理一次。</p>
+              </div>
+              <button type="button" class="btn" id="rule-new"><span data-icon="plus"></span><span>新建规则</span></button>
+            </div>
+            <div class="rule-list" id="rule-list"></div>
+            <form class="rule-form" id="rule-form" hidden novalidate>
+              <label class="field">
+                <span class="field-label">规则名称</span>
+                <input id="rule-name" type="text" maxlength="60" placeholder="例如：GitHub 通知归档" autocomplete="off">
+              </label>
+              <div class="rule-form-row">
+                <label class="field">
+                  <span class="field-label">条件</span>
+                  <select id="rule-field">
+                    <option value="from">发件人包含</option>
+                    <option value="subject">主题包含</option>
+                    <option value="to">收件人包含</option>
+                  </select>
+                </label>
+                <label class="field rule-value-field">
+                  <span class="field-label">匹配内容</span>
+                  <input id="rule-value" type="text" maxlength="200" placeholder="邮箱地址、名字或关键词" autocomplete="off">
+                </label>
+                <label class="field">
+                  <span class="field-label">执行</span>
+                  <select id="rule-action">
+                    <option value="read">标为已读</option>
+                    <option value="star">加星标</option>
+                    <option value="archive">归档</option>
+                    <option value="trash">移入已删除</option>
+                  </select>
+                </label>
+              </div>
+              <label class="check"><input id="rule-enabled" type="checkbox" checked> 启用这条规则</label>
+              <p class="form-error" id="rule-error" hidden></p>
+              <div class="rule-form-foot">
+                <button type="button" class="link-btn" id="rule-cancel">取消</button>
+                <button type="submit" class="btn primary" id="rule-save">保存规则</button>
+              </div>
+            </form>
+
+            <div class="settings-section-head blacklist-head">
+              <div>
+                <div class="setting-label">黑名单</div>
+                <p class="setting-sub">加入之后收到的该发件人邮件会自动标记已读并移入已删除。</p>
+              </div>
+            </div>
+            <div class="blacklist-add">
+              <input id="blacklist-email" type="email" placeholder="spam@example.com" autocomplete="off" spellcheck="false">
+              <button type="button" class="btn" id="blacklist-add">加入黑名单</button>
+            </div>
+            <p class="form-error" id="blacklist-error" hidden></p>
+            <div class="blacklist-list" id="blacklist-list"></div>
+          </div>
         </section>
         <section class="settings-panel" data-panel="appearance" hidden>
           <div class="settings-scroll">
@@ -416,6 +469,28 @@
     </div>
   </dialog>
 
+  <dialog class="sheet schedule-sheet" id="schedule-dialog">
+    <form id="schedule-form" novalidate>
+      <header class="dialog-head">
+        <h2>定时发送</h2>
+        <button type="button" class="icon-btn" data-close="schedule" title="关闭"><span data-icon="close"></span></button>
+      </header>
+      <div class="dialog-body">
+        <label class="field">
+          <span class="field-label">发送时间</span>
+          <input id="schedule-at" type="datetime-local" required>
+        </label>
+        <p class="field-hint" id="schedule-note">到时应用会在后台自动发送；关闭应用不影响定时。</p>
+        <p class="form-error" id="schedule-error" hidden></p>
+      </div>
+      <footer class="dialog-foot">
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close="schedule">取消</button>
+        <button type="submit" class="btn primary" id="schedule-confirm">确定</button>
+      </footer>
+    </form>
+  </dialog>
+
   <div class="compose-layer" id="compose-layer" hidden>
     <section class="compose" id="compose" aria-label="写信">
       <header class="compose-head">
@@ -471,6 +546,9 @@
       <div class="compose-attachments" id="compose-attachments" hidden></div>
       <footer class="compose-foot">
         <button type="button" class="btn primary" id="compose-send">发送</button>
+        <button type="button" class="btn compose-schedule-btn" id="compose-schedule">
+          <span data-icon="clock"></span><span>定时发送</span>
+        </button>
         <span class="compose-hint" id="compose-hint"></span>
         <span class="spacer"></span>
         <button type="button" class="link-btn" id="compose-save">保存草稿</button>

@@ -182,11 +182,17 @@ const state = {
   globalSyncError: null,
   purgeAttempted: false,
   filterUnread: false,
+  threaded: false,
+  thread: null,
+  threadLoading: false,
   selectedKey: null,
   checked: new Set(),
   lastCheckKey: null,
   contacts: [],
-  editingContact: null,
+  contactQuery: '',
+  selectedContact: null,
+  contactEditing: false,
+  contactDraft: null,
   contactPickField: null,
   reader: null,
   readerLoading: false,
@@ -200,6 +206,12 @@ const state = {
   readerTranslation: null,
   deeplKeyTouched: false,
   drafts: [],
+  scheduled: [],
+  selectedScheduleId: null,
+  scheduledDetail: null,
+  rules: [],
+  blacklist: [],
+  editingRuleId: null,
   search: null,
   searchTimer: null,
   searchToken: 0,
@@ -263,10 +275,13 @@ async function init() {
   renderList();
   renderReaderEmpty('选择邮件');
   loadContacts();
+  loadScheduledSummary();
 
   await loadBaseAccounts();
   subscribeMailPush();
   subscribeMailStatus();
+  subscribeScheduled();
+  subscribeFilters();
   api.update.onProgress(onUpdateProgress);
   await refreshAccountStatuses();
 
@@ -317,9 +332,13 @@ function cacheElements() {
     'update-note', 'update-dialog', 'update-from', 'update-to', 'update-notes', 'update-ignore',
     'update-later', 'update-download', 'batch-bar', 'batch-count', 'batch-star', 'batch-unstar',
     'update-progress', 'update-progress-fill', 'update-progress-text', 'update-cancel',
-    'batch-read', 'batch-unread', 'batch-archive', 'batch-trash', 'batch-clear', 'contacts-dialog',
-    'contacts-list', 'contact-form', 'contact-name', 'contact-email', 'contact-error', 'contact-new',
-    'contact-delete', 'contact-submit', 'contact-pop', 'contact-search', 'contact-pop-list',
+    'batch-read', 'batch-unread', 'batch-archive', 'batch-trash', 'batch-clear', 'contacts-view',
+    'contacts-view-list', 'contacts-view-count', 'contact-detail', 'contact-new',
+    'contact-pop', 'contact-search', 'contact-pop-list', 'thread-toggle', 'reader-thread',
+    'scheduled-detail', 'compose-schedule', 'schedule-dialog', 'schedule-form', 'schedule-at',
+    'schedule-note', 'schedule-error', 'schedule-confirm', 'rule-list', 'rule-form', 'rule-name',
+    'rule-field', 'rule-value', 'rule-action', 'rule-enabled', 'rule-error', 'rule-new', 'rule-cancel',
+    'rule-save', 'blacklist-email', 'blacklist-add', 'blacklist-error', 'blacklist-list',
     'select-all'
   ];
   for (const id of ids) {
@@ -532,8 +551,10 @@ function defaultView(account) {
 }
 
 function normalizeView(view) {
+  if (view && view.kind === 'contacts') return { kind: 'contacts' };
   if (!state.accounts.length) return null;
   if (!view) return defaultView();
+  if (view.kind === 'scheduled') return { kind: 'scheduled' };
   if (view.kind === 'unified') return state.accounts.length >= 2 ? { kind: 'unified' } : defaultView();
   if (view.kind === 'starred') return { kind: 'starred' };
   if (view.kind === 'archived') return { kind: 'archived' };
@@ -580,7 +601,9 @@ function viewLabel(view) {
   if (view.kind === 'starred') return '星标';
   if (view.kind === 'archived') return '归档';
   if (view.kind === 'drafts') return '草稿';
+  if (view.kind === 'scheduled') return '定时发送';
   if (view.kind === 'folder') return ROLE_LABELS[view.role] || view.label || '邮件';
+  if (view.kind === 'contacts') return '联系人';
   return '邮件';
 }
 
@@ -593,20 +616,30 @@ function viewAccounts() {
   return state.accounts;
 }
 
-function navigate(view) {
+async function navigate(view) {
+  if (!(await confirmContactDiscard())) return;
   const next = normalizeView(view);
   if (!next) {
     openAccountDialog();
     return;
   }
   resetSearchUI(true);
+  state.contactQuery = '';
+  state.contactEditing = false;
+  state.contactDraft = null;
   state.view = next;
   state.selectedKey = null;
+  state.thread = null;
+  state.threadLoading = false;
+  state.selectedScheduleId = null;
+  state.scheduledDetail = null;
   clearChecks();
   clearReader();
   writeUi();
   renderSidebar();
   renderHeader();
+  if (next.kind !== 'contacts') hideContactsWorkspace();
+  if (next.kind !== 'scheduled') hideScheduledDetail();
   loadView();
 }
 
@@ -617,7 +650,8 @@ function writeUi() {
       JSON.stringify({
         view: state.view,
         expanded: state.expanded,
-        filterUnread: state.filterUnread
+        filterUnread: state.filterUnread,
+        threaded: state.threaded
       })
     );
   } catch {}
@@ -629,6 +663,7 @@ function readUi() {
     if (saved && typeof saved === 'object') {
       if (saved.expanded && typeof saved.expanded === 'object') state.expanded = saved.expanded;
       if (saved.filterUnread) state.filterUnread = true;
+      if (saved.threaded) state.threaded = true;
       if (saved.view && typeof saved.view === 'object') state.savedView = saved.view;
     }
   } catch {}
@@ -671,10 +706,17 @@ function renderSidebar() {
     </button>
   `);
   group.push(`
-    <button type="button" class="nav-row nav-unified" data-nav="contacts">
+    <button type="button" class="nav-row${state.view.kind === 'contacts' ? ' is-active' : ''}" data-nav="contacts">
       <span class="nav-icon">${icon('contacts')}</span>
       <span class="nav-label">联系人</span>
       ${state.contacts.length ? `<span class="nav-count">${state.contacts.length}</span>` : ''}
+    </button>
+  `);
+  group.push(`
+    <button type="button" class="nav-row${state.view.kind === 'scheduled' ? ' is-active' : ''}" data-nav="scheduled">
+      <span class="nav-icon">${icon('clock')}</span>
+      <span class="nav-label">定时发送</span>
+      ${state.scheduled.length ? `<span class="nav-count">${state.scheduled.length}</span>` : ''}
     </button>
   `);
   parts.push(group.join(''));
@@ -761,6 +803,26 @@ function visibleMessages() {
 }
 
 function renderHeader() {
+  if (state.view.kind === 'contacts') {
+    els.viewTitle.textContent = '联系人';
+    els.viewCount.textContent = state.contacts.length ? `${state.contacts.length} 位` : '';
+    els.filterUnread.hidden = true;
+    els.selectAll.hidden = true;
+    els.markAllRead.hidden = true;
+    els.refreshBtn.hidden = true;
+    if (els.threadToggle) els.threadToggle.hidden = true;
+    return;
+  }
+  if (state.view.kind === 'scheduled') {
+    els.viewTitle.textContent = '定时发送';
+    els.viewCount.textContent = state.scheduled.length ? `${state.scheduled.length} 封` : '';
+    els.filterUnread.hidden = true;
+    els.selectAll.hidden = true;
+    els.markAllRead.hidden = true;
+    els.refreshBtn.hidden = false;
+    if (els.threadToggle) els.threadToggle.hidden = true;
+    return;
+  }
   const noAccounts = !state.accounts.length;
   let title = '邮件';
   if (!noAccounts) {
@@ -782,12 +844,131 @@ function renderHeader() {
   }
   els.viewCount.textContent = countText;
 
+  const threadable = !noAccounts && !state.search && state.view.kind !== 'drafts';
+  if (els.threadToggle) {
+    els.threadToggle.hidden = !threadable;
+    els.threadToggle.classList.toggle('is-on', state.threaded);
+    els.threadToggle.setAttribute('aria-pressed', String(state.threaded));
+    els.threadToggle.title = state.threaded ? '退出会话视图' : '会话视图';
+  }
   els.filterUnread.hidden = noAccounts || (state.view.kind === 'drafts' && !state.search);
   els.filterUnread.classList.toggle('is-on', state.filterUnread);
   els.filterUnread.setAttribute('aria-pressed', String(state.filterUnread));
-  els.selectAll.hidden = noAccounts || state.view.kind === 'drafts';
+  els.selectAll.hidden = noAccounts || state.view.kind === 'drafts' || state.threaded;
   els.markAllRead.hidden = noAccounts || Boolean(state.search) || state.view.kind !== 'folder';
   els.refreshBtn.hidden = noAccounts;
+}
+
+function canThreadView() {
+  return (
+    state.threaded &&
+    !state.search &&
+    !['drafts', 'scheduled', 'contacts'].includes(state.view.kind)
+  );
+}
+
+const SUBJECT_PREFIX = /^\s*(?:(?:re|fw|fwd|aw|sv|答复|回复|转发|转寄)\s*[:：]\s*)+/i;
+
+function normalizedSubject(subject) {
+  let value = String(subject == null ? '' : subject).replace(/\s+/g, ' ').trim();
+  for (let guard = 0; guard < 8; guard += 1) {
+    const next = value.replace(SUBJECT_PREFIX, '');
+    if (next === value) break;
+    value = next;
+  }
+  return value;
+}
+
+function threadKeyOf(message) {
+  return `${message.accountId}|${normalizedSubject(message.subject).toLowerCase()}`;
+}
+
+function threadGroups() {
+  const map = new Map();
+  for (const message of state.messages) {
+    const subject = normalizedSubject(message.subject);
+    if (!subject) {
+      map.set(`single:${messageKey(message)}`, {
+        key: `single:${messageKey(message)}`,
+        subject: message.subject || '无主题',
+        messages: [message]
+      });
+      continue;
+    }
+    const key = threadKeyOf(message);
+    let group = map.get(key);
+    if (!group) {
+      group = { key, subject, messages: [] };
+      map.set(key, group);
+    }
+    group.messages.push(message);
+  }
+  const groups = [...map.values()]
+    .map((group) => {
+      group.messages.sort((a, b) => b.timestamp - a.timestamp || b.seq - a.seq);
+      const latest = group.messages[0];
+      return {
+        ...group,
+        latest,
+        count: group.messages.length,
+        unread: group.messages.some((message) => !message.seen),
+        flagged: group.messages.some((message) => message.flagged),
+        participants: [...new Set(group.messages.map((message) => senderName(message)))].slice(0, 3)
+      };
+    })
+    .sort((a, b) => b.latest.timestamp - a.latest.timestamp || b.latest.seq - a.latest.seq);
+  return state.filterUnread ? groups.filter((group) => group.unread) : groups;
+}
+
+function renderThreadRow(group) {
+  const key = `thread:${group.key}`;
+  const selected = state.selectedKey === key;
+  const showAccount =
+    (state.view.kind === 'unified' || state.view.kind === 'starred' || state.view.kind === 'archived') &&
+    state.accounts.length > 1;
+  const color = safeColor(group.latest.accountColor || (accountById(group.latest.accountId) || {}).color);
+  const names = group.participants.join('、');
+  return `<div class="msg-row thread-row${group.unread ? ' is-unread' : ''}${selected ? ' is-selected' : ''}" data-thread-key="${escapeHtml(
+    group.key
+  )}" role="option" aria-selected="${selected}">
+    <span class="unread-mark"></span>
+    <span class="msg-avatar" style="${avatarStyle(color)}">${escapeHtml(initialOf(names))}</span>
+    <div class="msg-main">
+      <div class="msg-line">
+        ${showAccount ? `<span class="msg-acct-dot" style="background:${color}"></span>` : ''}
+        <span class="msg-from">${escapeHtml(names)}</span>
+        ${group.count > 1 ? `<span class="thread-count">${group.count}</span>` : ''}
+        <span class="msg-date">${formatListDate(group.latest.date || group.latest.timestamp)}</span>
+      </div>
+      <div class="msg-line">
+        <span class="msg-subject">${escapeHtml(group.subject || '无主题')}</span>
+        ${group.flagged ? `<span class="msg-flag">${icon('star-filled')}</span>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderScheduledRow(item) {
+  const account = accountById(item.accountId);
+  const color = safeColor(account ? account.color : '');
+  const to = String(item.to || '').trim() || '未填写收件人';
+  const selected = state.selectedScheduleId === item.id;
+  return `<div class="msg-row scheduled-row${selected ? ' is-selected' : ''}" data-schedule-id="${escapeHtml(
+    item.id
+  )}" role="option" aria-selected="${selected}">
+    <span class="msg-avatar" style="${avatarStyle(color)}">${icon('clock')}</span>
+    <div class="msg-main">
+      <div class="msg-line">
+        <span class="msg-subject" style="color:var(--text)">${escapeHtml(item.subject || '无主题')}</span>
+        ${item.attachmentCount ? `<span class="msg-paperclip">${icon('paperclip')}</span>` : ''}
+        ${item.lastError ? `<span class="scheduled-error" title="${escapeHtml(item.lastError)}">发送失败</span>` : ''}
+        <span class="msg-date">${formatFullDate(item.sendAt)}</span>
+      </div>
+      <div class="msg-line">
+        <span class="msg-from" style="font-weight:400;color:var(--text-2)">${escapeHtml(to)}</span>
+      </div>
+    </div>
+  </div>`;
 }
 
 function renderList({ preserveScroll = false } = {}) {
@@ -805,16 +986,24 @@ function renderList({ preserveScroll = false } = {}) {
     html = list.length
       ? list.map(renderMessageRow).join('')
       : emptyListHtml('search', '无结果');
+  } else if (state.view.kind === 'scheduled') {
+    html = state.scheduled.length
+      ? state.scheduled.map(renderScheduledRow).join('')
+      : emptyListHtml('clock', '没有定时邮件');
   } else if (state.view.kind === 'drafts') {
     html = state.drafts.length
       ? state.drafts.map(renderDraftRow).join('')
       : emptyListHtml('drafts', '无草稿');
   } else {
     const list = visibleMessages();
-    if (list.length) {
-      html = list.map(renderMessageRow).join('');
-    } else {
+    if (!list.length) {
       html = emptyListHtml(state.filterUnread ? 'unread-dot' : 'inbox', state.filterUnread ? '无未读邮件' : '无邮件');
+    } else if (canThreadView()) {
+      html = threadGroups()
+        .map((group) => renderThreadRow(group))
+        .join('');
+    } else {
+      html = list.map(renderMessageRow).join('');
     }
   }
 
@@ -902,6 +1091,7 @@ function updateFooter() {
     !state.loading &&
     !state.listError &&
     state.view.kind !== 'drafts' &&
+    state.view.kind !== 'scheduled' &&
     (state.view.kind === 'unified' || state.view.kind === 'starred' || state.view.kind === 'archived'
       ? Object.values(state.messagesCursors || {}).some((cursor) => cursor != null)
       : state.messagesCursor != null);
@@ -1203,6 +1393,36 @@ function pagedView() {
 }
 
 async function loadView({ preserveReader = false, keepScroll = false } = {}) {
+  if (state.view.kind === 'contacts') {
+    state.loading = false;
+    showContactsWorkspace();
+    return;
+  }
+  if (state.view.kind === 'scheduled') {
+    state.loading = true;
+    state.listError = null;
+    state.scheduledDetail = null;
+    state.selectedScheduleId = null;
+    els.listBanner.hidden = true;
+    clearReader();
+    hideScheduledDetail();
+    renderScheduledDetail();
+    renderList();
+    renderHeader();
+    updateFooter();
+    try {
+      const rows = await api.scheduled.list();
+      state.scheduled = Array.isArray(rows) ? rows : [];
+    } catch (err) {
+      state.listError = err && err.message ? err.message : '无法读取定时邮件';
+    }
+    state.loading = false;
+    renderList({ preserveScroll: keepScroll });
+    renderHeader();
+    updateFooter();
+    renderScheduledDetail();
+    return;
+  }
   if (!state.accounts.length) {
     state.loading = false;
     state.messages = [];
@@ -1213,6 +1433,7 @@ async function loadView({ preserveReader = false, keepScroll = false } = {}) {
     if (!preserveReader) clearReader();
     return;
   }
+  hideScheduledDetail();
   const token = ++state.loadToken;
   state.loading = true;
   state.listError = null;
@@ -1252,6 +1473,7 @@ async function loadView({ preserveReader = false, keepScroll = false } = {}) {
       const data = await api.mail.list({
         accountId: state.view.accountId,
         path: state.view.path,
+        role: state.view.role,
         limit: PAGE_SIZE
       });
       if (token !== state.loadToken) return;
@@ -1278,7 +1500,7 @@ async function loadView({ preserveReader = false, keepScroll = false } = {}) {
 }
 
 async function loadMore() {
-  if (state.loading || state.loadingMore || state.search || state.view.kind === 'drafts' || !state.accounts.length) {
+  if (state.loading || state.loadingMore || state.search || state.view.kind === 'drafts' || state.view.kind === 'scheduled' || !state.accounts.length) {
     return;
   }
   const token = state.loadToken;
@@ -1300,6 +1522,7 @@ async function loadMore() {
       const data = await api.mail.list({
         accountId: state.view.accountId,
         path: state.view.path,
+        role: state.view.role,
         cursor: state.messagesCursor,
         limit: PAGE_SIZE
       });
@@ -1335,6 +1558,7 @@ async function silentReloadList() {
     state.loadingMore ||
     state.search ||
     state.view.kind === 'drafts' ||
+    state.view.kind === 'scheduled' ||
     !state.accounts.length ||
     state.pageCount !== 1
   ) {
@@ -1353,6 +1577,7 @@ async function silentReloadList() {
       const data = await api.mail.list({
         accountId: state.view.accountId,
         path: state.view.path,
+        role: state.view.role,
         limit: PAGE_SIZE
       });
       if (token !== state.loadToken || state.search) return;
@@ -1594,6 +1819,39 @@ function subscribeMailStatus() {
   api.mail.onStatus((status) => applyAccountStatus(status));
 }
 
+function subscribeScheduled() {
+  if (!api.scheduled || typeof api.scheduled.onChange !== 'function') return;
+  let timer = null;
+  api.scheduled.onChange((payload) => {
+    if (payload && payload.type === 'sent') {
+      toast(payload.warning ? `定时邮件已发送：${payload.warning}` : '定时邮件已发送');
+    }
+    if (payload && payload.type === 'error') toast('定时邮件发送失败，稍后会自动重试');
+    if (timer) clearTimeout(timer);
+    timer = window.setTimeout(async () => {
+      timer = null;
+      await loadScheduledSummary();
+      if (state.view.kind === 'scheduled' && !state.loading) await refreshScheduledView();
+    }, 250);
+  });
+}
+
+function subscribeFilters() {
+  if (!api.mail || typeof api.mail.onFiltered !== 'function') return;
+  let timer = null;
+  api.mail.onFiltered((payload) => {
+    const processed = Number(payload && payload.processed) || 0;
+    if (!processed) return;
+    toast(`过滤器处理了 ${processed} 封邮件`);
+    if (timer) clearTimeout(timer);
+    timer = window.setTimeout(async () => {
+      timer = null;
+      if (state.view.kind === 'contacts' || state.view.kind === 'scheduled') return;
+      if (state.pageCount === 1 && !state.search) await silentReloadList();
+    }, 500);
+  });
+}
+
 function applyAccountStatus(status) {
   if (!status || !status.accountId) return;
   const previous = state.accountStatus[status.accountId];
@@ -1674,6 +1932,7 @@ async function runSearch(query) {
     return;
   }
   if (!state.accounts.length) return;
+  hideScheduledDetail();
   const first = !state.search;
   state.search = { query: text, scope: searchScope() };
   if (first) clearSelection();
@@ -1783,6 +2042,10 @@ function showReaderLoading() {
   els.remoteBanner.hidden = true;
   els.readerAttachments.hidden = true;
   els.readerAttachments.innerHTML = '';
+  if (els.readerThread) {
+    els.readerThread.hidden = true;
+    els.readerThread.innerHTML = '';
+  }
   clearReaderFrame();
 }
 
@@ -1961,6 +2224,8 @@ async function toggleTranslate() {
 
 function clearReader() {
   state.reader = null;
+  state.thread = null;
+  state.threadLoading = false;
   state.readerLoading = false;
   state.readerError = null;
   state.readerRetry = null;
@@ -2000,10 +2265,141 @@ function currentMailInfo() {
   return null;
 }
 
+async function openThread(groupKey) {
+  const groups = threadGroups();
+  const group = groups.find((item) => item.key === groupKey);
+  if (!group) return;
+  const latest = group.latest;
+  state.thread = {
+    key: group.key,
+    subject: group.subject,
+    messages: group.messages.slice().sort((a, b) => a.timestamp - b.timestamp || a.seq - b.seq),
+    accountId: latest.accountId,
+    selectedKey: messageKey(latest)
+  };
+  state.threadLoading = true;
+  state.selectedKey = `thread:${group.key}`;
+  renderList({ preserveScroll: true });
+  showReaderLoading();
+  const token = ++state.readToken;
+  try {
+    const data = await api.mail.thread({
+      accountId: latest.accountId,
+      subject: group.subject,
+      path: latest.path
+    });
+    if (token !== state.readToken) return;
+    const fetched = Array.isArray(data && data.messages) ? data.messages : [];
+    if (fetched.length) {
+      const seen = new Map();
+      for (const message of fetched) {
+        seen.set(`${message.path}\u0000${message.uid}`, message);
+      }
+      for (const message of group.messages) {
+        const key = `${message.path}\u0000${message.uid}`;
+        if (!seen.has(key)) seen.set(key, message);
+      }
+      state.thread.messages = [...seen.values()].sort(
+        (a, b) => a.timestamp - b.timestamp || a.seq - b.seq
+      );
+    }
+  } catch (err) {
+    if (token !== state.readToken) return;
+  } finally {
+    if (token === state.readToken) state.threadLoading = false;
+  }
+  if (!state.thread || token !== state.readToken) return;
+  const newest = state.thread.messages[state.thread.messages.length - 1] || latest;
+  await selectThreadMessage(newest);
+}
+
+async function selectThreadMessage(message) {
+  if (!message) return;
+  const key = messageKey(message);
+  const token = ++state.readToken;
+  state.reader = null;
+  state.readerError = null;
+  state.readerRetry = message;
+  state.readerLoading = true;
+  state.readerAllowRemote = false;
+  state.readerHasRemote = false;
+  if (state.thread) state.thread.selectedKey = key;
+  showReaderLoading();
+  renderThreadStrip();
+  try {
+    const data = await api.mail.read({
+      accountId: message.accountId,
+      path: message.path,
+      uid: message.uid
+    });
+    if (token !== state.readToken) return;
+    state.reader = data;
+    state.readerLoading = false;
+    const summary = state.messages.find((item) => messageKey(item) === key) || message;
+    if (data.seen && !summary.seen) {
+      summary.seen = true;
+      bumpUnseen(summary.accountId, summary.path, -1);
+    }
+    summary.seen = Boolean(data.seen);
+    if (typeof data.flagged === 'boolean') summary.flagged = data.flagged;
+    if (state.thread) {
+      const threadMessage = state.thread.messages.find((item) => messageKey(item) === key);
+      if (threadMessage) {
+        threadMessage.seen = summary.seen;
+        threadMessage.flagged = summary.flagged;
+      }
+    }
+    renderReader();
+    renderThreadStrip();
+    renderList({ preserveScroll: true });
+  } catch (err) {
+    if (token !== state.readToken) return;
+    state.readerLoading = false;
+    state.readerError = err && err.message ? err.message : '无法打开邮件';
+    renderReaderEmpty(state.readerError, '重试');
+    renderThreadStrip();
+  }
+}
+
+function renderThreadStrip() {
+  if (!els.readerThread) return;
+  const thread = state.thread;
+  if (!thread || !thread.messages.length) {
+    els.readerThread.hidden = true;
+    els.readerThread.innerHTML = '';
+    return;
+  }
+  const selectedKey = thread.selectedKey;
+  els.readerThread.hidden = false;
+  els.readerThread.innerHTML = `<div class="thread-strip-head">
+      <span>${thread.messages.length} 封邮件</span>
+      <span class="thread-strip-hint">按时间顺序</span>
+    </div>
+    <div class="thread-strip-list">${thread.messages
+      .map((message) => {
+        const key = messageKey(message);
+        const active = key === selectedKey;
+        const name = senderName(message);
+        return `<button type="button" class="thread-chip${active ? ' is-active' : ''}" data-thread-uid="${Number(
+          message.uid
+        )}" data-thread-path="${escapeHtml(message.path)}">
+          <span class="thread-chip-name">${escapeHtml(name)}</span>
+          <span class="thread-chip-date">${escapeHtml(formatListDate(message.date || message.timestamp))}</span>
+          <span class="thread-chip-subject">${escapeHtml(message.subject || '无主题')}</span>
+        </button>`;
+      })
+      .join('')}</div>`;
+}
+
 async function selectMessage(message, { force = false } = {}) {
   if (!message) return;
   const key = messageKey(message);
   if (!force && state.selectedKey === key && state.reader && !state.readerError) return;
+  state.thread = null;
+  if (els.readerThread) {
+    els.readerThread.hidden = true;
+    els.readerThread.innerHTML = '';
+  }
 
   state.selectedKey = key;
   state.reader = null;
@@ -2059,7 +2455,7 @@ function renderReader() {
   els.readerView.hidden = false;
   els.readerLoading.hidden = true;
 
-  els.readerSubject.textContent = data.subject || '无主题';
+  els.readerSubject.textContent = state.thread ? state.thread.subject : data.subject || '无主题';
   const fromName = data.from && (data.from.name || data.from.address) ? data.from.name || data.from.address : '未知发件人';
   const color = safeColor(data.accountColor);
   els.readerFrom.textContent = fromName;
@@ -2076,6 +2472,7 @@ function renderReader() {
   if (cc) parts.push(`抄送：${cc}`);
   els.readerRecipients.textContent = parts.join('　');
   els.readerRecipients.title = parts.join('，');
+  renderThreadStrip();
 
   updateReaderButtons();
   renderAttachments(data.attachments || []);
@@ -2139,18 +2536,23 @@ function renderAttachments(attachments) {
     els.readerAttachments.innerHTML = '';
     return;
   }
+  const total = attachments.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
   els.readerAttachments.hidden = false;
-  els.readerAttachments.innerHTML = attachments
-    .map(
-      (attachment) => `<button type="button" class="attachment-chip" data-attachment-index="${Number(
-        attachment.index
-      )}" title="保存附件">
+  els.readerAttachments.innerHTML = `<div class="attachment-head">
+      <span class="attachment-sum">${attachments.length} 个附件 · ${formatSize(total)}</span>
+      ${attachments.length > 1 ? '<button type="button" class="link-btn" data-save-all-attachments>全部保存</button>' : ''}
+    </div>
+    <div class="attachment-list">${attachments
+      .map(
+        (attachment) => `<button type="button" class="attachment-chip" data-attachment-index="${Number(
+          attachment.index
+        )}" title="保存附件">
         <span class="attachment-name">${escapeHtml(attachment.name || '附件')}</span>
         <span class="attachment-size">${formatSize(attachment.size)}</span>
         <span class="icon-btn">${icon('download')}</span>
       </button>`
-    )
-    .join('');
+      )
+      .join('')}</div>`;
 }
 
 async function toggleStar() {
@@ -2469,6 +2871,7 @@ async function openComposeShell(data) {
     html: String(data.html || ''),
     inReplyTo: String(data.inReplyTo || ''),
     references: String(data.references || ''),
+    sendAt: String(data.sendAt || ''),
     attachments: Array.isArray(data.attachments) ? data.attachments.slice() : [],
     dirty: false,
     saving: false,
@@ -2490,7 +2893,7 @@ async function openComposeShell(data) {
   els.composeCcLine.hidden = !compose.cc;
   els.composeBccLine.hidden = !compose.bcc;
   els.composeEditor.innerHTML = compose.html;
-  els.composeHint.textContent = '';
+  els.composeHint.textContent = compose.sendAt ? `定时发送：${formatFullDate(compose.sendAt)}` : '';
   els.composeSend.disabled = false;
   els.composeSend.textContent = '发送';
   renderComposeAttachments();
@@ -2536,16 +2939,21 @@ function renderComposeAttachments() {
     els.composeAttachments.innerHTML = '';
     return;
   }
+  const total = compose.attachments.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
   els.composeAttachments.hidden = false;
-  els.composeAttachments.innerHTML = compose.attachments
-    .map(
-      (attachment, index) => `<span class="compose-chip">
+  els.composeAttachments.innerHTML = `<div class="attachment-summary">
+      <span>${compose.attachments.length} 个附件 · ${formatSize(total)}</span>
+      <span>上限 25 MB</span>
+    </div>
+    <div class="attachment-chips">${compose.attachments
+      .map(
+        (attachment, index) => `<span class="compose-chip">
         <span class="name">${escapeHtml(attachment.name || '附件')}</span>
         <span class="size">${formatSize(attachment.size)}</span>
         <button type="button" class="chip-remove" data-remove-attachment="${index}" title="移除">${icon('close')}</button>
       </span>`
-    )
-    .join('');
+      )
+      .join('')}</div>`;
 }
 
 function syncComposeFieldValues() {
@@ -2631,6 +3039,7 @@ async function saveCompose({ manual = false } = {}) {
       html: compose.html,
       inReplyTo: compose.inReplyTo,
       references: compose.references,
+      sendAt: compose.sendAt || '',
       attachments: compose.attachments.map(({ name, path, size }) => ({ name, path, size }))
     });
     if (!compose.id && result && result.id) {
@@ -2646,6 +3055,7 @@ async function saveCompose({ manual = false } = {}) {
       } catch {}
     }
     compose.dirty = false;
+    els.composeHint.textContent = compose.sendAt ? `定时发送：${formatFullDate(compose.sendAt)}` : '';
     if (manual) toast('草稿已保存');
     await refreshDraftRows();
     return true;
@@ -2763,10 +3173,11 @@ async function sendCompose() {
 
     if (compose.id) {
       const id = compose.id;
+      const counted = !compose.sendAt;
       compose.id = null;
       try {
         await api.drafts.remove(id);
-        adjustDraftCount(compose.accountId, -1);
+        if (counted) adjustDraftCount(compose.accountId, -1);
       } catch {}
     }
     if (compose.detachedDraft) {
@@ -2793,6 +3204,84 @@ async function sendCompose() {
     els.composeSend.textContent = '发送';
     toast(err && err.message ? err.message : '发送失败');
   }
+}
+
+function localDateTimeValue(date) {
+  const value = new Date(date);
+  const pad = (number) => String(number).padStart(2, '0');
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(
+    value.getHours()
+  )}:${pad(value.getMinutes())}`;
+}
+
+function openScheduleDialog() {
+  const compose = state.compose;
+  if (!compose) return;
+  syncComposeFieldValues();
+  if (!compose.to.trim()) {
+    toast('请填写收件人');
+    els.composeTo.focus();
+    return;
+  }
+  els.scheduleError.hidden = true;
+  els.scheduleAt.value = compose.sendAt
+    ? localDateTimeValue(compose.sendAt)
+    : localDateTimeValue(Date.now() + 60 * 60 * 1000);
+  els.scheduleNote.textContent = compose.sendAt
+    ? '修改发送时间后，原定时时间会被替换。'
+    : '到时应用会在后台自动发送；关闭窗口后仍然有效。';
+  els.scheduleDialog.showModal();
+  window.setTimeout(() => els.scheduleAt.focus(), 40);
+}
+
+function closeScheduleDialog() {
+  if (els.scheduleDialog.open) els.scheduleDialog.close();
+}
+
+async function scheduleCompose() {
+  const compose = state.compose;
+  if (!compose) return;
+  syncComposeFieldValues();
+  if (!compose.to.trim()) {
+    els.scheduleError.textContent = '请填写收件人';
+    els.scheduleError.hidden = false;
+    return;
+  }
+  const at = new Date(els.scheduleAt.value);
+  if (!Number.isFinite(at.getTime()) || at.getTime() < Date.now() + 60 * 1000) {
+    els.scheduleError.textContent = '请选择至少 1 分钟之后的时间';
+    els.scheduleError.hidden = false;
+    return;
+  }
+  const totalBytes = compose.attachments.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
+  if (totalBytes > 25 * 1024 * 1024) {
+    els.scheduleError.textContent = '附件总大小不能超过 25 MB';
+    els.scheduleError.hidden = false;
+    return;
+  }
+  const countedAsDraft = !compose.sendAt;
+  if (compose.autosaveTimer) {
+    clearTimeout(compose.autosaveTimer);
+    compose.autosaveTimer = null;
+  }
+  let waits = 0;
+  while (compose.saving && waits < 120) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    waits += 1;
+  }
+  compose.sendAt = at.toISOString();
+  const saved = await saveCompose({ manual: false });
+  if (!saved) {
+    els.scheduleError.textContent = '定时邮件保存失败';
+    els.scheduleError.hidden = false;
+    return;
+  }
+  if (countedAsDraft) adjustDraftCount(compose.accountId, -1);
+  closeScheduleDialog();
+  hideComposeUi();
+  toast(`已安排在 ${formatFullDate(compose.sendAt)} 发送`);
+  await loadScheduledSummary();
+  if (state.view.kind === 'scheduled') await refreshScheduledView();
 }
 
 function hideComposeUi() {
@@ -2825,7 +3314,7 @@ async function discardCompose() {
   try {
     if (compose.id) {
       await api.drafts.remove(compose.id);
-      adjustDraftCount(compose.accountId, -1);
+      if (!compose.sendAt) adjustDraftCount(compose.accountId, -1);
     }
     if (compose.detachedDraft) {
       await api.drafts.remove(compose.detachedDraft.id);
@@ -2859,6 +3348,7 @@ async function openDraft(id) {
       html: draft.html,
       inReplyTo: draft.inReplyTo,
       references: draft.references,
+      sendAt: draft.sendAt || '',
       attachments: draft.attachments,
       focus: 'editor'
     });
@@ -2907,22 +3397,26 @@ async function changeComposeAccount(accountId) {
   scheduleAutosave();
 }
 
-async function addComposeAttachments() {
+async function addComposeAttachments(files = null) {
   const compose = state.compose;
   if (!compose) return;
   try {
-    const files = await api.files.pick();
-    if (!Array.isArray(files) || !files.length) return;
+    const picked = files || (await api.files.pick());
+    if (!Array.isArray(picked) || !picked.length) return;
     const known = new Set(compose.attachments.map((item) => item.path));
     let total = compose.attachments.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
-    for (const file of files) {
+    for (const file of picked) {
       if (!file || !file.path || known.has(file.path)) continue;
+      if (compose.attachments.length >= 20) {
+        toast('一封邮件最多 20 个附件');
+        break;
+      }
       total += Number(file.size) || 0;
       if (total > 25 * 1024 * 1024) {
         toast('附件总大小不能超过 25 MB');
         break;
       }
-      compose.attachments.push({ name: file.name, path: file.path, size: file.size });
+      compose.attachments.push({ name: file.name, path: file.path, size: Number(file.size) || 0 });
       known.add(file.path);
     }
     renderComposeAttachments();
@@ -2930,6 +3424,17 @@ async function addComposeAttachments() {
   } catch (err) {
     toast(err && err.message ? err.message : '无法添加附件');
   }
+}
+
+function droppedFiles(event) {
+  const files = [];
+  const list = event.dataTransfer && event.dataTransfer.files ? event.dataTransfer.files : [];
+  for (const file of list) {
+    const filePath = api.files && typeof api.files.pathFor === 'function' ? api.files.pathFor(file) : file.path;
+    if (!filePath) continue;
+    files.push({ path: filePath, name: file.name, size: file.size });
+  }
+  return files;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3295,9 +3800,180 @@ function activateSettingsTab(tab) {
   for (const panel of document.querySelectorAll('[data-panel]')) {
     panel.hidden = panel.dataset.panel !== tab;
   }
-  const titles = { accounts: '账户', general: '常规', appearance: '外观', update: '更新' };
+  const titles = { accounts: '账户', general: '常规', rules: '规则与黑名单', appearance: '外观', update: '更新' };
   els.settingsTitle.textContent = titles[tab] || '设置';
   if (tab === 'update') renderSettingsUpdate();
+  if (tab === 'rules') loadRules();
+}
+
+/* ------------------------------------------------------------------ */
+/* Rules and blacklist                                                */
+/* ------------------------------------------------------------------ */
+
+const RULE_ACTION_LABELS = {
+  read: '标为已读',
+  star: '加星标',
+  archive: '归档',
+  trash: '移入已删除'
+};
+
+const RULE_FIELD_LABELS = {
+  from: '发件人包含',
+  subject: '主题包含',
+  to: '收件人包含'
+};
+
+async function loadRules() {
+  try {
+    const data = await api.rules.list();
+    state.rules = Array.isArray(data && data.rules) ? data.rules : [];
+    state.blacklist = Array.isArray(data && data.blacklist) ? data.blacklist : [];
+    renderRules();
+  } catch (err) {
+    els.ruleList.innerHTML = `<p class="field-hint">${escapeHtml(
+      err && err.message ? err.message : '无法读取规则'
+    )}</p>`;
+  }
+}
+
+function renderRules() {
+  if (!state.rules.length) {
+    els.ruleList.innerHTML = '<p class="rules-empty">还没有过滤器。新建一条规则，让新邮件自动归档、加星或标为已读。</p>';
+  } else {
+    els.ruleList.innerHTML = state.rules
+      .map((rule) => `<div class="rule-row${rule.enabled ? '' : ' is-off'}" data-rule-id="${escapeHtml(rule.id)}">
+        <label class="switch" title="${rule.enabled ? '停用规则' : '启用规则'}">
+          <input type="checkbox" data-toggle-rule="${escapeHtml(rule.id)}"${rule.enabled ? ' checked' : ''}>
+          <span></span>
+        </label>
+        <div class="rule-main">
+          <div class="rule-name">${escapeHtml(rule.name)}</div>
+          <div class="rule-condition">${escapeHtml(RULE_FIELD_LABELS[rule.field] || rule.field)}“${escapeHtml(
+        rule.value
+      )}” · ${escapeHtml(RULE_ACTION_LABELS[rule.action] || rule.action)}</div>
+        </div>
+        <button type="button" class="icon-btn" data-edit-rule="${escapeHtml(rule.id)}" title="编辑规则">${icon('edit')}</button>
+        <button type="button" class="icon-btn" data-remove-rule="${escapeHtml(rule.id)}" title="删除规则">${icon('trash')}</button>
+      </div>`)
+      .join('');
+  }
+
+  if (!state.blacklist.length) {
+    els.blacklistList.innerHTML = '<p class="rules-empty">黑名单为空。</p>';
+  } else {
+    els.blacklistList.innerHTML = state.blacklist
+      .map(
+        (entry) => `<div class="blacklist-row">
+        <span class="blacklist-email">${escapeHtml(entry.email)}</span>
+        <button type="button" class="icon-btn" data-remove-blacklist="${escapeHtml(entry.email)}" title="移出黑名单">${icon('close')}</button>
+      </div>`
+      )
+      .join('');
+  }
+}
+
+function openRuleForm(rule = null) {
+  state.editingRuleId = rule ? rule.id : null;
+  els.ruleForm.hidden = false;
+  els.ruleError.hidden = true;
+  els.ruleName.value = rule ? rule.name || '' : '';
+  els.ruleField.value = rule ? rule.field : 'from';
+  els.ruleValue.value = rule ? rule.value : '';
+  els.ruleAction.value = rule ? rule.action : 'read';
+  els.ruleEnabled.checked = rule ? rule.enabled !== false : true;
+  els.ruleSave.textContent = rule ? '保存修改' : '保存规则';
+  els.ruleName.focus();
+}
+
+function closeRuleForm() {
+  state.editingRuleId = null;
+  els.ruleForm.hidden = true;
+  els.ruleError.hidden = true;
+}
+
+async function submitRuleForm() {
+  const name = els.ruleName.value.trim();
+  const value = els.ruleValue.value.trim();
+  if (!value) {
+    els.ruleError.textContent = '请填写匹配内容';
+    els.ruleError.hidden = false;
+    return;
+  }
+  els.ruleSave.disabled = true;
+  try {
+    await api.rules.save({
+      id: state.editingRuleId || '',
+      name: name || undefined,
+      field: els.ruleField.value,
+      value,
+      action: els.ruleAction.value,
+      enabled: els.ruleEnabled.checked
+    });
+    closeRuleForm();
+    await loadRules();
+    toast('规则已保存');
+  } catch (err) {
+    els.ruleError.textContent = err && err.message ? err.message : '保存失败';
+    els.ruleError.hidden = false;
+  } finally {
+    els.ruleSave.disabled = false;
+  }
+}
+
+async function toggleRule(id, enabled) {
+  const rule = state.rules.find((item) => item.id === id);
+  if (!rule) return;
+  try {
+    await api.rules.save({ ...rule, enabled });
+    await loadRules();
+  } catch (err) {
+    toast(err && err.message ? err.message : '操作失败');
+    await loadRules();
+  }
+}
+
+async function removeRule(id) {
+  const rule = state.rules.find((item) => item.id === id);
+  const confirmed = await api.dialog.confirm({
+    title: '删除规则',
+    message: `删除“${rule ? rule.name : '这条规则'}”？`,
+    confirmLabel: '删除',
+    cancelLabel: '取消',
+    danger: true
+  });
+  if (!confirmed) return;
+  try {
+    await api.rules.remove(id);
+    await loadRules();
+    toast('规则已删除');
+  } catch (err) {
+    toast(err && err.message ? err.message : '删除失败');
+  }
+}
+
+async function addBlacklistEntry() {
+  const email = els.blacklistEmail.value.trim();
+  els.blacklistError.hidden = true;
+  if (!email) return;
+  try {
+    state.blacklist = await api.rules.addBlacklist(email);
+    els.blacklistEmail.value = '';
+    renderRules();
+    toast('已加入黑名单');
+  } catch (err) {
+    els.blacklistError.textContent = err && err.message ? err.message : '无法加入黑名单';
+    els.blacklistError.hidden = false;
+  }
+}
+
+async function removeBlacklistEntry(email) {
+  try {
+    await api.rules.removeBlacklist(email);
+    await loadRules();
+    toast('已移出黑名单');
+  } catch (err) {
+    toast(err && err.message ? err.message : '操作失败');
+  }
 }
 
 function renderSettingsAccounts() {
@@ -3683,6 +4359,39 @@ function toast(message) {
 }
 
 function moveSelection(delta) {
+  if (state.view.kind === 'contacts') return;
+  if (state.view.kind === 'scheduled') {
+    if (!state.scheduled.length) return;
+    let index = state.scheduled.findIndex((item) => item.id === state.selectedScheduleId);
+    if (index < 0) index = delta > 0 ? -1 : state.scheduled.length;
+    const nextIndex = Math.max(0, Math.min(state.scheduled.length - 1, index + delta));
+    const item = state.scheduled[nextIndex];
+    selectScheduled(item.id);
+    window.requestAnimationFrame(() => {
+      const row = [...els.messageList.querySelectorAll('.scheduled-row')].find(
+        (entry) => entry.dataset.scheduleId === item.id
+      );
+      if (row) row.scrollIntoView({ block: 'nearest' });
+    });
+    return;
+  }
+  if (state.view.kind === 'drafts') return;
+  if (canThreadView()) {
+    const groups = threadGroups();
+    if (!groups.length) return;
+    let index = groups.findIndex((group) => state.selectedKey === `thread:${group.key}`);
+    if (index < 0) index = delta > 0 ? -1 : groups.length;
+    const nextIndex = Math.max(0, Math.min(groups.length - 1, index + delta));
+    const group = groups[nextIndex];
+    openThread(group.key);
+    window.requestAnimationFrame(() => {
+      const row = [...els.messageList.querySelectorAll('.thread-row')].find(
+        (item) => item.dataset.threadKey === group.key
+      );
+      if (row) row.scrollIntoView({ block: 'nearest' });
+    });
+    return;
+  }
   const list = visibleMessages();
   if (!list.length) return;
   let index = list.findIndex((message) => messageKey(message) === state.selectedKey);
@@ -3700,6 +4409,220 @@ function moveSelection(delta) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Scheduled send                                                     */
+/* ------------------------------------------------------------------ */
+
+async function loadScheduledSummary() {
+  try {
+    const rows = await api.scheduled.list();
+    state.scheduled = Array.isArray(rows) ? rows : [];
+  } catch {
+    state.scheduled = state.scheduled || [];
+  }
+  renderSidebar();
+  if (state.view.kind === 'scheduled' && !state.loading) {
+    renderList({ preserveScroll: true });
+    renderHeader();
+    if (state.selectedScheduleId) {
+      const item = state.scheduled.find((entry) => entry.id === state.selectedScheduleId);
+      if (!item) {
+        state.selectedScheduleId = null;
+        state.scheduledDetail = null;
+        hideScheduledDetail();
+        renderScheduledDetail();
+      } else {
+        selectScheduled(item.id);
+      }
+    }
+  }
+}
+
+function hideScheduledDetail() {
+  if (!els.scheduledDetail) return;
+  els.scheduledDetail.hidden = true;
+  els.scheduledDetail.innerHTML = '';
+  state.scheduledDetail = null;
+  state.selectedScheduleId = null;
+}
+
+function scheduledAddressText(value) {
+  return String(value || '').trim() || '未填写';
+}
+
+function renderScheduledDetail() {
+  if (!els.scheduledDetail) return;
+  const item = state.scheduledDetail;
+  if (!item) {
+    els.scheduledDetail.hidden = false;
+    els.scheduledDetail.innerHTML = `<div class="scheduled-empty">
+      <span class="empty-icon">${icon('clock')}</span>
+      <p>${state.scheduled.length ? '从左侧选择一封定时邮件' : '还没有定时邮件'}</p>
+      <p class="field-hint">在写信页点“定时发送”即可安排发送时间。</p>
+    </div>`;
+    return;
+  }
+  const account = accountById(item.accountId);
+  els.scheduledDetail.hidden = false;
+  els.scheduledDetail.innerHTML = `<div class="scheduled-inner">
+    <header class="scheduled-head">
+      <span class="msg-avatar scheduled-avatar" style="${avatarStyle(account ? account.color : '')}">${icon('clock')}</span>
+      <div class="scheduled-id">
+        <h2 class="scheduled-subject">${escapeHtml(item.subject || '无主题')}</h2>
+        <p class="scheduled-meta">${escapeHtml(formatFullDate(item.sendAt))}</p>
+      </div>
+      <button type="button" class="btn primary" data-schedule-action="edit">${icon('edit')}<span>编辑</span></button>
+    </header>
+    <div class="scheduled-body">
+      <div class="contact-field"><span class="contact-field-label">发件人</span><span class="contact-field-value">${escapeHtml(
+        account ? account.email : '账户不存在'
+      )}</span></div>
+      <div class="contact-field"><span class="contact-field-label">收件人</span><span class="contact-field-value">${escapeHtml(
+        scheduledAddressText(item.to)
+      )}</span></div>
+      ${item.cc ? `<div class="contact-field"><span class="contact-field-label">抄送</span><span class="contact-field-value">${escapeHtml(item.cc)}</span></div>` : ''}
+      <div class="contact-field"><span class="contact-field-label">定时时间</span><span class="contact-field-value">${escapeHtml(
+        formatFullDate(item.sendAt)
+      )}</span></div>
+      <div class="contact-field"><span class="contact-field-label">附件</span><span class="contact-field-value">${
+        item.attachments && item.attachments.length
+          ? item.attachments.map((attachment) => `${escapeHtml(attachment.name)}（${formatSize(attachment.size)}）`).join('，')
+          : '无'
+      }</span></div>
+      ${item.lastError ? `<div class="scheduled-error-box"><span>${icon('warning')}</span><span>上次发送失败：${escapeHtml(item.lastError)}${
+        item.nextAttempt && Number(item.nextAttempt) > Date.now()
+          ? `；将于 ${escapeHtml(formatFullDate(item.nextAttempt))} 自动重试`
+          : ''
+      }</span></div>` : ''}
+      <p class="field-hint">到时间后应用会在后台自动发送，关闭窗口后仍然有效。</p>
+    </div>
+    <footer class="scheduled-foot">
+      <button type="button" class="btn danger-ghost" data-schedule-action="delete">删除</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" data-schedule-action="cancel">取消定时</button>
+      <button type="button" class="btn" data-schedule-action="send">立即发送</button>
+    </footer>
+  </div>`;
+  hydrateIcons(els.scheduledDetail);
+}
+
+async function selectScheduled(id) {
+  const entry = state.scheduled.find((item) => item.id === id);
+  if (!entry) return;
+  state.selectedScheduleId = id;
+  renderList({ preserveScroll: true });
+  try {
+    const detail = await api.drafts.get(id);
+    if (state.selectedScheduleId !== id) return;
+    if (!detail) throw new Error('定时邮件不存在');
+    state.scheduledDetail = detail;
+    renderScheduledDetail();
+  } catch (err) {
+    state.scheduledDetail = null;
+    renderScheduledDetail();
+    toast(err && err.message ? err.message : '无法读取定时邮件');
+  }
+}
+
+async function refreshScheduledView() {
+  try {
+    const rows = await api.scheduled.list();
+    state.scheduled = Array.isArray(rows) ? rows : [];
+  } catch {}
+  renderSidebar();
+  if (state.view.kind === 'scheduled') {
+    renderList({ preserveScroll: true });
+    renderHeader();
+    const item = state.selectedScheduleId
+      ? state.scheduled.find((entry) => entry.id === state.selectedScheduleId)
+      : null;
+    if (!item) {
+      state.selectedScheduleId = null;
+      state.scheduledDetail = null;
+      hideScheduledDetail();
+      renderScheduledDetail();
+    } else {
+      await selectScheduled(item.id);
+    }
+  }
+}
+
+async function sendScheduledNow(id) {
+  const confirmed = await api.dialog.confirm({
+    title: '立即发送',
+    message: '现在发送这封定时邮件？',
+    confirmLabel: '发送',
+    cancelLabel: '取消'
+  });
+  if (!confirmed) return;
+  try {
+    const result = await api.scheduled.sendNow(id);
+    toast(result && result.warning ? `已发送：${result.warning}` : '已发送');
+    await refreshScheduledView();
+  } catch (err) {
+    toast(err && err.message ? err.message : '发送失败');
+  }
+}
+
+async function cancelScheduled(id) {
+  const confirmed = await api.dialog.confirm({
+    title: '取消定时',
+    message: '取消定时后，这封邮件会回到草稿箱。',
+    confirmLabel: '取消定时',
+    cancelLabel: '保留',
+    danger: true
+  });
+  if (!confirmed) return;
+  try {
+    const item = state.scheduled.find((entry) => entry.id === id);
+    await api.scheduled.cancel(id);
+    if (item) adjustDraftCount(item.accountId, 1);
+    toast('已取消定时，邮件已回到草稿箱');
+    await refreshScheduledView();
+    await refreshDraftRows();
+  } catch (err) {
+    toast(err && err.message ? err.message : '操作失败');
+  }
+}
+
+async function deleteScheduled(id) {
+  const item = state.scheduled.find((entry) => entry.id === id);
+  const confirmed = await api.dialog.confirm({
+    title: '删除定时邮件',
+    message: `删除“${item ? item.subject || '无主题' : '这封邮件'}”？`,
+    confirmLabel: '删除',
+    cancelLabel: '取消',
+    danger: true
+  });
+  if (!confirmed) return;
+  try {
+    await api.drafts.remove(id);
+    toast('已删除');
+    await refreshScheduledView();
+  } catch (err) {
+    toast(err && err.message ? err.message : '删除失败');
+  }
+}
+
+function editScheduled(item) {
+  if (!item) return;
+  openComposeShell({
+    id: item.id,
+    accountId: item.accountId,
+    kind: item.kind || 'new',
+    to: item.to,
+    cc: item.cc,
+    bcc: item.bcc,
+    subject: item.subject,
+    html: item.html,
+    inReplyTo: item.inReplyTo,
+    references: item.references,
+    attachments: item.attachments,
+    sendAt: item.sendAt,
+    focus: 'editor'
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Contacts                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -3712,6 +4635,14 @@ async function loadContacts() {
     state.contacts = [];
   }
   renderSidebar();
+  if (state.view.kind === 'contacts') {
+    if (!state.selectedContact || !contactByEmail(state.selectedContact)) {
+      state.selectedContact = state.contacts[0] ? state.contacts[0].email : null;
+    }
+    renderContactList();
+    renderContactDetail();
+    renderHeader();
+  }
 }
 
 function filteredContacts(query) {
@@ -3724,18 +4655,86 @@ function filteredContacts(query) {
   );
 }
 
-function contactError(message) {
-  const text = String(message || '');
-  els.contactError.textContent = text;
-  els.contactError.hidden = !text;
+function contactByEmail(email) {
+  return state.contacts.find((contact) => contact.email === String(email || '')) || null;
 }
 
-function renderContactsList() {
-  const selected = state.editingContact ? state.editingContact.email : '';
-  els.contactsList.innerHTML = state.contacts.length
-    ? state.contacts
+function activeContact() {
+  return contactByEmail(state.selectedContact);
+}
+
+function contactDraftDirty() {
+  if (!state.contactEditing) return false;
+  const nameEl = document.getElementById('contact-name');
+  const emailEl = document.getElementById('contact-email');
+  if (!nameEl || !emailEl) return false;
+  const draft = state.contactDraft || {};
+  return (
+    nameEl.value.trim() !== String(draft.name || '').trim() ||
+    emailEl.value.trim() !== String(draft.email || '').trim()
+  );
+}
+
+async function confirmContactDiscard() {
+  if (state.view.kind !== 'contacts' || !contactDraftDirty()) return true;
+  return api.dialog.confirm({
+    title: '放弃修改',
+    message: '当前联系人还有未保存的修改，确定放弃？',
+    confirmLabel: '放弃',
+    cancelLabel: '继续编辑',
+    danger: true
+  });
+}
+
+function contactError(message) {
+  const el = document.getElementById('contact-error');
+  if (!el) return;
+  const text = String(message || '');
+  el.textContent = text;
+  el.hidden = !text;
+}
+
+function showContactsWorkspace() {
+  const workspace = els.contactsView ? els.contactsView.parentElement : null;
+  if (workspace) workspace.classList.add('is-contacts');
+  if (els.contactsView) els.contactsView.hidden = false;
+  if (els.searchInput) {
+    els.searchInput.placeholder = '搜索联系人';
+    els.searchInput.setAttribute('aria-label', '搜索联系人');
+  }
+  if (!state.contactEditing && !activeContact() && state.contacts.length) {
+    state.selectedContact = state.contacts[0].email;
+  }
+  renderSidebar();
+  renderContactList();
+  renderContactDetail();
+  renderHeader();
+}
+
+function hideContactsWorkspace() {
+  const workspace = els.contactsView ? els.contactsView.parentElement : null;
+  if (workspace) workspace.classList.remove('is-contacts');
+  if (els.contactsView) els.contactsView.hidden = true;
+  if (els.searchInput) {
+    els.searchInput.placeholder = '搜索邮件';
+    els.searchInput.setAttribute('aria-label', '搜索邮件');
+  }
+}
+
+function renderContactList() {
+  if (!els.contactsViewList) return;
+  const list = filteredContacts(state.contactQuery);
+  if (els.contactsViewCount) {
+    els.contactsViewCount.textContent = state.contacts.length
+      ? state.contactQuery
+        ? `${list.length}/${state.contacts.length} 位`
+        : `${state.contacts.length} 位`
+      : '';
+  }
+  els.contactsViewList.innerHTML = list.length
+    ? list
         .map(
-          (contact) => `<button type="button" class="contact-row${contact.email === selected ? ' is-active' : ''}" data-contact="${escapeHtml(contact.email)}">
+          (contact) => `<button type="button" class="contact-row${contact.email === state.selectedContact ? ' is-active' : ''}" data-contact="${escapeHtml(contact.email)}">
             <span class="msg-avatar" style="${avatarStyle('#7d8590')}">${escapeHtml(initialOf(contact.name || contact.email))}</span>
             <span class="contact-row-text">
               <span class="contact-row-name">${escapeHtml(contact.name || contact.email)}</span>
@@ -3744,67 +4743,243 @@ function renderContactsList() {
           </button>`
         )
         .join('')
-    : '<p class="contacts-empty">还没有联系人</p>';
+    : `<div class="contacts-view-empty">${state.contactQuery ? '没有匹配的联系人' : '还没有联系人'}</div>`;
+  hydrateIcons(els.contactsViewList);
 }
 
-function showContactForm(contact) {
-  state.editingContact = contact ? { name: contact.name, email: contact.email } : null;
-  els.contactName.value = contact ? contact.name || '' : '';
-  els.contactEmail.value = contact ? contact.email : '';
-  els.contactDelete.hidden = !contact;
-  els.contactSubmit.textContent = contact ? '保存' : '添加';
-  contactError('');
-  renderContactsList();
+function renderContactDetail() {
+  if (!els.contactDetail) return;
+
+  if (state.contactEditing) {
+    const draft = state.contactDraft || { name: '', email: '', originalEmail: '' };
+    const isNew = !draft.originalEmail;
+    const title = isNew ? '新建联系人' : '编辑联系人';
+    els.contactDetail.innerHTML = `
+      <form class="contact-detail-form" id="contact-form" novalidate>
+        <header class="contact-detail-head">
+          <span class="msg-avatar contact-detail-avatar" style="${avatarStyle('#7d8590')}">${escapeHtml(
+            initialOf(draft.name || draft.email || '?')
+          )}</span>
+          <div class="contact-detail-id">
+            <h2 class="contact-detail-name">${escapeHtml(title)}</h2>
+            <p class="contact-email-text">${isNew ? '填写姓名与邮箱地址' : escapeHtml(draft.originalEmail)}</p>
+          </div>
+        </header>
+        <div class="contact-detail-body">
+          <label class="field">
+            <span class="field-label">姓名</span>
+            <input id="contact-name" type="text" autocomplete="off" value="${escapeHtml(draft.name || '')}">
+          </label>
+          <label class="field">
+            <span class="field-label">邮箱地址</span>
+            <input id="contact-email" type="text" inputmode="email" autocomplete="off" spellcheck="false" value="${escapeHtml(
+              draft.email || ''
+            )}">
+          </label>
+          <p class="field-hint">联系人保存在本机。</p>
+          <p class="form-error" id="contact-error" hidden></p>
+        </div>
+        <footer class="contact-detail-foot">
+          ${
+            isNew
+              ? ''
+              : '<button type="button" class="btn danger-ghost" data-contact-action="delete">删除联系人</button>'
+          }
+          <span class="spacer"></span>
+          <button type="button" class="btn" data-contact-action="cancel">取消</button>
+          <button type="submit" class="btn primary" id="contact-submit">${isNew ? '添加' : '保存'}</button>
+        </footer>
+      </form>`;
+  } else {
+    const contact = activeContact();
+    if (!contact) {
+      els.contactDetail.innerHTML = `
+        <div class="contact-empty">
+          <span class="empty-icon" data-icon="contacts"></span>
+          <p>${state.contacts.length ? '从左侧选择联系人' : '还没有联系人'}</p>
+          <button type="button" class="btn primary" data-contact-action="new">新建联系人</button>
+        </div>`;
+    } else {
+      const displayName = contact.name || contact.email;
+      els.contactDetail.innerHTML = `
+        <div class="contact-detail-inner">
+          <header class="contact-detail-head">
+            <span class="msg-avatar contact-detail-avatar" style="${avatarStyle('#7d8590')}">${escapeHtml(
+              initialOf(displayName)
+            )}</span>
+            <div class="contact-detail-id">
+              <h2 class="contact-detail-name">${escapeHtml(displayName)}</h2>
+              <div class="contact-email-row">
+                <span class="contact-email-text">${escapeHtml(contact.email)}</span>
+                <button type="button" class="icon-btn contact-copy" data-contact-action="copy" title="复制邮箱" aria-label="复制邮箱">
+                  <span data-icon="copy"></span>
+                </button>
+              </div>
+            </div>
+            <button type="button" class="btn primary contact-compose-btn" data-contact-action="compose">
+              <span data-icon="compose"></span><span>写信</span>
+            </button>
+          </header>
+          <div class="contact-detail-body">
+            <div class="contact-field">
+              <span class="contact-field-label">姓名</span>
+              <span class="contact-field-value">${escapeHtml(contact.name || '—')}</span>
+            </div>
+            <div class="contact-field">
+              <span class="contact-field-label">邮箱</span>
+              <span class="contact-field-value">${escapeHtml(contact.email)}</span>
+            </div>
+          </div>
+          <footer class="contact-detail-foot">
+            <button type="button" class="btn danger-ghost" data-contact-action="delete">删除联系人</button>
+            <span class="spacer"></span>
+            <button type="button" class="btn" data-contact-action="edit"><span data-icon="edit"></span><span>编辑</span></button>
+          </footer>
+        </div>`;
+    }
+  }
+  hydrateIcons(els.contactDetail);
 }
 
-function openContactsDialog() {
-  showContactForm(state.contacts[0] || null);
-  if (!els.contactsDialog.open) els.contactsDialog.showModal();
-  els.contactName.focus();
+async function selectContact(email) {
+  if (!(await confirmContactDiscard())) return;
+  state.contactEditing = false;
+  state.contactDraft = null;
+  state.selectedContact = email;
+  renderContactList();
+  renderContactDetail();
+}
+
+async function startNewContact() {
+  if (!(await confirmContactDiscard())) return;
+  state.selectedContact = null;
+  state.contactEditing = true;
+  state.contactDraft = { name: '', email: '', originalEmail: '' };
+  renderContactList();
+  renderContactDetail();
+  const nameEl = document.getElementById('contact-name');
+  if (nameEl) nameEl.focus();
+}
+
+function startContactEdit() {
+  const contact = activeContact();
+  if (!contact) return;
+  state.contactEditing = true;
+  state.contactDraft = {
+    name: contact.name || '',
+    email: contact.email,
+    originalEmail: contact.email
+  };
+  renderContactDetail();
+  const nameEl = document.getElementById('contact-name');
+  if (nameEl) nameEl.focus();
+}
+
+function cancelContactEdit() {
+  state.contactEditing = false;
+  state.contactDraft = null;
+  if (!activeContact() && state.contacts.length) {
+    state.selectedContact = state.contacts[0].email;
+  }
+  renderContactList();
+  renderContactDetail();
 }
 
 async function submitContactForm() {
-  const name = els.contactName.value.trim();
-  const email = els.contactEmail.value.trim();
+  const nameEl = document.getElementById('contact-name');
+  const emailEl = document.getElementById('contact-email');
+  if (!emailEl) return;
+  const name = nameEl ? nameEl.value.trim() : '';
+  const email = emailEl.value.trim();
   if (!email) {
     contactError('请填写邮箱地址');
+    emailEl.focus();
     return;
   }
-  els.contactSubmit.disabled = true;
+  const submit = document.getElementById('contact-submit');
+  const creating = !state.contactDraft || !state.contactDraft.originalEmail;
+  if (submit) submit.disabled = true;
   try {
     const saved = await api.contacts.save({
       name,
       email,
-      originalEmail: state.editingContact ? state.editingContact.email : ''
+      originalEmail: state.contactDraft ? state.contactDraft.originalEmail : ''
     });
+    state.contactEditing = false;
+    state.contactDraft = null;
+    state.selectedContact = saved.email;
     await loadContacts();
-    showContactForm(state.contacts.find((item) => item.email === saved.email) || saved);
+    renderContactList();
+    renderContactDetail();
+    toast(creating ? '已添加联系人' : '联系人已保存');
   } catch (err) {
     contactError(err && err.message ? err.message : '保存失败');
   } finally {
-    els.contactSubmit.disabled = false;
+    if (submit) submit.disabled = false;
   }
 }
 
-async function removeCurrentContact() {
-  if (!state.editingContact) return;
-  const email = state.editingContact.email;
+async function removeContact() {
+  const target = state.contactEditing
+    ? contactByEmail(state.contactDraft && state.contactDraft.originalEmail)
+    : activeContact();
+  if (!target) return;
+
   const confirmed = await api.dialog.confirm({
     title: '删除联系人',
-    message: `删除联系人 ${email}？`,
+    message: `删除联系人 ${target.email}？`,
     confirmLabel: '删除',
     cancelLabel: '取消',
     danger: true
   });
   if (!confirmed) return;
+
+  const index = state.contacts.findIndex((item) => item.email === target.email);
   try {
-    await api.contacts.remove({ email });
+    await api.contacts.remove({ email: target.email });
+    state.contactEditing = false;
+    state.contactDraft = null;
     await loadContacts();
-    showContactForm(state.contacts[0] || null);
+    const next = state.contacts[Math.min(Math.max(index, 0), state.contacts.length - 1)] || null;
+    state.selectedContact = next ? next.email : null;
+    renderContactList();
+    renderContactDetail();
+    toast('联系人已删除');
   } catch (err) {
-    contactError(err && err.message ? err.message : '删除失败');
+    if (state.contactEditing) contactError(err && err.message ? err.message : '删除失败');
+    else toast(err && err.message ? err.message : '删除失败');
   }
 }
+
+async function copyContactEmail() {
+  const contact = activeContact() || (state.contactEditing
+    ? contactByEmail(state.contactDraft && state.contactDraft.originalEmail)
+    : null);
+  if (!contact) return;
+  try {
+    await api.app.copyText(contact.email);
+    toast('已复制邮箱');
+    const button = els.contactDetail.querySelector('[data-contact-action="copy"]');
+    if (button) {
+      button.classList.add('is-copied');
+      button.innerHTML = icon('check');
+      window.setTimeout(() => {
+        if (!button.isConnected) return;
+        button.classList.remove('is-copied');
+        button.innerHTML = icon('copy');
+      }, 1600);
+    }
+  } catch (err) {
+    toast(err && err.message ? err.message : '复制失败');
+  }
+}
+
+function composeToContact() {
+  const contact = activeContact();
+  if (!contact) return;
+  openComposeShell({ kind: 'new', to: contact.email });
+}
+
 
 function closeContactPicker() {
   state.contactPickField = null;
@@ -3893,6 +5068,11 @@ function bindEvents() {
   els.searchInput.addEventListener('input', () => {
     const query = els.searchInput.value.trim();
     els.searchClear.hidden = !query;
+    if (state.view.kind === 'contacts') {
+      state.contactQuery = query;
+      renderContactList();
+      return;
+    }
     if (state.searchTimer) clearTimeout(state.searchTimer);
     if (!query) {
       if (state.search) clearSearch();
@@ -3906,17 +5086,34 @@ function bindEvents() {
   els.searchInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
+      if (state.view.kind === 'contacts') return;
       if (state.searchTimer) clearTimeout(state.searchTimer);
       const query = els.searchInput.value.trim();
       if (query) runSearch(query);
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      if (state.view.kind === 'contacts') {
+        state.contactQuery = '';
+        els.searchInput.value = '';
+        els.searchClear.hidden = true;
+        renderContactList();
+        els.searchInput.blur();
+        return;
+      }
       clearSearch();
       els.searchInput.blur();
     }
   });
 
   els.searchClear.addEventListener('click', () => {
+    if (state.view.kind === 'contacts') {
+      state.contactQuery = '';
+      els.searchInput.value = '';
+      els.searchClear.hidden = true;
+      renderContactList();
+      els.searchInput.focus();
+      return;
+    }
     clearSearch();
     els.searchInput.focus();
   });
@@ -3937,6 +5134,19 @@ function bindEvents() {
   els.markAllRead.addEventListener('click', markAllRead);
 
   els.selectAll.addEventListener('click', toggleSelectAll);
+
+  if (els.threadToggle) {
+    els.threadToggle.addEventListener('click', () => {
+      state.threaded = !state.threaded;
+      state.thread = null;
+      state.selectedKey = null;
+      clearChecks();
+      writeUi();
+      renderHeader();
+      renderList();
+      clearReader();
+    });
+  }
 
   els.batchStar.addEventListener('click', () => batchSetFlags(['\\Flagged'], [], '已加星标'));
   els.batchUnstar.addEventListener('click', () => batchSetFlags([], ['\\Flagged'], '已取消星标'));
@@ -3968,7 +5178,12 @@ function bindEvents() {
     }
     const contacts = event.target.closest('[data-nav="contacts"]');
     if (contacts) {
-      openContactsDialog();
+      navigate({ kind: 'contacts' });
+      return;
+    }
+    const scheduled = event.target.closest('[data-nav="scheduled"]');
+    if (scheduled) {
+      navigate({ kind: 'scheduled' });
       return;
     }
     const retry = event.target.closest('[data-retry-account]');
@@ -4024,6 +5239,16 @@ function bindEvents() {
       await openDraft(draftRow.dataset.draftId);
       return;
     }
+    const scheduleRow = event.target.closest('[data-schedule-id]');
+    if (scheduleRow) {
+      await selectScheduled(scheduleRow.dataset.scheduleId);
+      return;
+    }
+    const threadRow = event.target.closest('[data-thread-key]');
+    if (threadRow) {
+      await openThread(threadRow.dataset.threadKey);
+      return;
+    }
     const row = event.target.closest('[data-key]');
     if (!row) return;
     const check = event.target.closest('[data-check]');
@@ -4066,7 +5291,37 @@ function bindEvents() {
   els.actionRestore.addEventListener('click', restoreCurrent);
   els.actionTrash.addEventListener('click', deleteCurrent);
 
+  if (els.readerThread) {
+    els.readerThread.addEventListener('click', async (event) => {
+      const chip = event.target.closest('[data-thread-uid]');
+      if (!chip || !state.thread) return;
+      const message = state.thread.messages.find(
+        (item) => Number(item.uid) === Number(chip.dataset.threadUid) && item.path === chip.dataset.threadPath
+      );
+      if (message) selectThreadMessage(message);
+    });
+  }
+
   els.readerAttachments.addEventListener('click', async (event) => {
+    const saveAll = event.target.closest('[data-save-all-attachments]');
+    if (saveAll && state.reader) {
+      saveAll.disabled = true;
+      try {
+        const result = await api.mail.saveAllAttachments({
+          accountId: state.reader.accountId,
+          path: state.reader.path,
+          uid: state.reader.uid
+        });
+        if (result && result.canceled === false) {
+          toast(`已保存 ${result.files.length} 个附件`);
+        }
+      } catch (err) {
+        toast(err && err.message ? err.message : '无法保存附件');
+      } finally {
+        saveAll.disabled = false;
+      }
+      return;
+    }
     const chip = event.target.closest('[data-attachment-index]');
     if (!chip || !state.reader) return;
     const name = chip.querySelector('.attachment-name');
@@ -4089,9 +5344,29 @@ function bindEvents() {
 
   bindAccountDialog();
   bindSettingsDialog();
-  bindContactsDialog();
+  bindContactsView();
+  bindScheduledView();
   bindCompose();
   bindKeyboard();
+}
+
+function bindScheduledView() {
+  if (!els.scheduledDetail) return;
+  els.scheduledDetail.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-schedule-action]');
+    if (!button) return;
+    const id = state.selectedScheduleId;
+    if (!id) return;
+    if (button.dataset.scheduleAction === 'edit') {
+      editScheduled(state.scheduledDetail);
+    } else if (button.dataset.scheduleAction === 'send') {
+      await sendScheduledNow(id);
+    } else if (button.dataset.scheduleAction === 'cancel') {
+      await cancelScheduled(id);
+    } else if (button.dataset.scheduleAction === 'delete') {
+      await deleteScheduled(id);
+    }
+  });
 }
 
 function bindAccountDialog() {
@@ -4163,6 +5438,37 @@ function bindSettingsDialog() {
   for (const tab of document.querySelectorAll('.settings-tab')) {
     tab.addEventListener('click', () => activateSettingsTab(tab.dataset.tab));
   }
+  els.ruleNew.addEventListener('click', () => openRuleForm());
+  els.ruleCancel.addEventListener('click', closeRuleForm);
+  els.ruleForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitRuleForm();
+  });
+  els.ruleList.addEventListener('click', async (event) => {
+    const edit = event.target.closest('[data-edit-rule]');
+    if (edit) {
+      const rule = state.rules.find((item) => item.id === edit.dataset.editRule);
+      if (rule) openRuleForm(rule);
+      return;
+    }
+    const remove = event.target.closest('[data-remove-rule]');
+    if (remove) await removeRule(remove.dataset.removeRule);
+  });
+  els.ruleList.addEventListener('change', (event) => {
+    const toggle = event.target.closest('[data-toggle-rule]');
+    if (toggle) toggleRule(toggle.dataset.toggleRule, toggle.checked);
+  });
+  els.blacklistAdd.addEventListener('click', addBlacklistEntry);
+  els.blacklistEmail.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      addBlacklistEntry();
+    }
+  });
+  els.blacklistList.addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-remove-blacklist]');
+    if (remove) removeBlacklistEntry(remove.dataset.removeBlacklist);
+  });
   els.settingsAddAccount.addEventListener('click', () => openAccountDialog());
   els.generalSave.addEventListener('click', saveGeneralSettings);
   els.deeplKeyInput.addEventListener('input', () => {
@@ -4212,22 +5518,29 @@ function bindSettingsDialog() {
   });
 }
 
-function bindContactsDialog() {
-  for (const button of document.querySelectorAll('[data-close="contacts"]')) {
-    button.addEventListener('click', () => els.contactsDialog.close());
-  }
-  els.contactsList.addEventListener('click', (event) => {
+function bindContactsView() {
+  els.contactsViewList.addEventListener('click', (event) => {
     const row = event.target.closest('[data-contact]');
     if (!row) return;
-    showContactForm(state.contacts.find((item) => item.email === row.dataset.contact) || null);
-    els.contactName.focus();
+    selectContact(row.dataset.contact);
   });
-  els.contactNew.addEventListener('click', () => {
-    showContactForm(null);
-    els.contactName.focus();
+
+  els.contactNew.addEventListener('click', startNewContact);
+
+  els.contactDetail.addEventListener('click', (event) => {
+    const action = event.target.closest('[data-contact-action]');
+    if (!action) return;
+    const name = action.dataset.contactAction;
+    if (name === 'compose') composeToContact();
+    else if (name === 'copy') copyContactEmail();
+    else if (name === 'edit') startContactEdit();
+    else if (name === 'cancel') cancelContactEdit();
+    else if (name === 'delete') removeContact();
+    else if (name === 'new') startNewContact();
   });
-  els.contactDelete.addEventListener('click', removeCurrentContact);
-  els.contactForm.addEventListener('submit', (event) => {
+
+  els.contactDetail.addEventListener('submit', (event) => {
+    if (event.target.id !== 'contact-form') return;
     event.preventDefault();
     submitContactForm();
   });
@@ -4238,7 +5551,39 @@ function bindCompose() {
   els.composeDiscard.addEventListener('click', discardCompose);
   els.composeSend.addEventListener('click', sendCompose);
   els.composeSave.addEventListener('click', () => saveCompose({ manual: true }));
-  els.composeAttach.addEventListener('click', addComposeAttachments);
+  els.composeAttach.addEventListener('click', () => addComposeAttachments());
+  els.composeSchedule.addEventListener('click', openScheduleDialog);
+  for (const button of document.querySelectorAll('[data-close="schedule"]')) {
+    button.addEventListener('click', closeScheduleDialog);
+  }
+  els.scheduleForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    scheduleCompose();
+  });
+  els.scheduleDialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeScheduleDialog();
+  });
+
+  els.compose.addEventListener('dragover', (event) => {
+    if (!state.compose) return;
+    const hasFiles = Array.from(event.dataTransfer ? event.dataTransfer.types : []).includes('Files');
+    if (!hasFiles) return;
+    event.preventDefault();
+    els.compose.classList.add('is-dragging');
+  });
+  els.compose.addEventListener('dragleave', (event) => {
+    if (!els.compose.contains(event.relatedTarget)) els.compose.classList.remove('is-dragging');
+  });
+  els.compose.addEventListener('drop', (event) => {
+    if (!state.compose) return;
+    const hasFiles = Array.from(event.dataTransfer ? event.dataTransfer.types : []).includes('Files');
+    if (!hasFiles) return;
+    event.preventDefault();
+    els.compose.classList.remove('is-dragging');
+    const files = droppedFiles(event);
+    if (files.length) addComposeAttachments(files);
+  });
   els.composeAccount.addEventListener('change', () => {
     changeComposeAccount(els.composeAccount.value);
   });

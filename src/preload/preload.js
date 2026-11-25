@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 async function call(channel, payload) {
   const response = await ipcRenderer.invoke(channel, payload);
@@ -37,10 +37,30 @@ function onUpdateProgress(handler) {
   ipcRenderer.on('update:progress', updateProgressListener);
 }
 
+let scheduledListener = null;
+
+function onScheduledChange(handler) {
+  if (typeof handler !== 'function') return;
+  if (scheduledListener) ipcRenderer.removeListener('scheduled:changed', scheduledListener);
+  scheduledListener = (_event, payload) => handler(payload);
+  ipcRenderer.on('scheduled:changed', scheduledListener);
+}
+
+let filteredListener = null;
+
+function onMailFiltered(handler) {
+  if (typeof handler !== 'function') return;
+  if (filteredListener) ipcRenderer.removeListener('mail:filtered', filteredListener);
+  filteredListener = (_event, payload) => handler(payload);
+  ipcRenderer.on('mail:filtered', filteredListener);
+}
+
 contextBridge.exposeInMainWorld('dymail', {
   app: {
     info: () => call('app:info'),
     open: (url) => call('app:open', { url }),
+    copyText: (text) => call('app:copy-text', { text }),
+    showItem: (path) => call('app:show-item', { path }),
     getAutoLaunch: () => call('app:get-autolaunch'),
     setAutoLaunch: (enabled) => call('app:set-autolaunch', { enabled }),
     notify: (payload) => call('app:notify', payload)
@@ -69,6 +89,7 @@ contextBridge.exposeInMainWorld('dymail', {
     listStarred: (payload) => call('mail:list-starred', payload),
     listArchived: (payload) => call('mail:list-archived', payload),
     search: (payload) => call('mail:search', payload),
+    thread: (payload) => call('mail:thread', payload),
     read: (payload) => call('mail:read', payload),
     document: (document) => call('mail:document', { document }),
     setFlags: (payload) => call('mail:set-flags', payload),
@@ -78,8 +99,10 @@ contextBridge.exposeInMainWorld('dymail', {
     restore: (payload) => call('mail:restore', payload),
     purgeTrash: () => call('mail:purge-trash', {}),
     saveAttachment: (payload) => call('mail:save-attachment', payload),
+    saveAllAttachments: (payload) => call('mail:save-all-attachments', payload),
     onPush: onMailPush,
-    onStatus: onMailStatus
+    onStatus: onMailStatus,
+    onFiltered: onMailFiltered
   },
   compose: {
     send: (payload) => call('compose:send', payload)
@@ -90,13 +113,33 @@ contextBridge.exposeInMainWorld('dymail', {
     save: (payload) => call('drafts:save', payload),
     remove: (id) => call('drafts:remove', { id })
   },
+  scheduled: {
+    list: (accountId) => call('scheduled:list', { accountId }),
+    cancel: (id) => call('scheduled:cancel', { id }),
+    sendNow: (id) => call('scheduled:send-now', { id }),
+    onChange: onScheduledChange
+  },
+  rules: {
+    list: () => call('rules:list'),
+    save: (payload) => call('rules:save', payload),
+    remove: (id) => call('rules:remove', { id }),
+    addBlacklist: (email) => call('blacklist:add', { email }),
+    removeBlacklist: (email) => call('blacklist:remove', { email })
+  },
   contacts: {
     list: () => call('contacts:list'),
     save: (payload) => call('contacts:save', payload),
     remove: (payload) => call('contacts:remove', payload)
   },
   files: {
-    pick: () => call('files:pick')
+    pick: () => call('files:pick'),
+    pathFor: (file) => {
+      try {
+        return webUtils.getPathForFile(file);
+      } catch {
+        return '';
+      }
+    }
   },
   settings: {
     get: () => call('settings:get'),

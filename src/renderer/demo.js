@@ -472,6 +472,23 @@ const drafts = [
     references: '',
     attachments: [],
     updatedAt: days(2)
+  },
+  {
+    id: 'scheduled-work-1',
+    accountId: 'acc-work',
+    kind: 'new',
+    to: '王婷 <wangting@northwind.cn>',
+    cc: '',
+    bcc: '',
+    subject: '评审材料补充',
+    html: '<p>补充了窄屏状态和加载态的说明，明天上午看。</p>',
+    inReplyTo: '',
+    references: '',
+    attachments: [{ name: '评审补充说明.pdf', size: 182000, path: 'C:\\Users\\Public\\Documents\\评审补充说明.pdf' }],
+    sendAt: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+    attempts: 0,
+    lastError: '',
+    updatedAt: mins(8)
   }
 ];
 
@@ -483,6 +500,7 @@ const demoContacts = [
 ];
 
 const demoOpened = [];
+const demoCopied = [];
 const demoNotifications = [];
 const demoAccountSaves = [];
 const demoDeeplKeys = [];
@@ -493,6 +511,10 @@ const demoPurges = [];
 const demoAutoLaunchCalls = [];
 const demoSyncOneCalls = [];
 let demoAutoLaunch = false;
+let demoRules = [];
+const demoBlacklist = [];
+let demoScheduledHandler = null;
+let demoFilteredHandler = null;
 let demoPushHandler = null;
 
 /* Lets the harness exercise the same subscription path the preload exposes, so
@@ -503,6 +525,7 @@ window.__dymailPush = (accountId) => {
 
 window.dymailDemoCalls = {
   opened: demoOpened,
+  copied: demoCopied,
   notifications: demoNotifications,
   accountSaves: demoAccountSaves,
   contacts: demoContacts,
@@ -512,7 +535,9 @@ window.dymailDemoCalls = {
   moves: demoMoves,
   deletes: demoDeletes,
   restores: demoRestores,
-  purges: demoPurges
+  purges: demoPurges,
+  rules: demoRules,
+  blacklist: demoBlacklist
 };
 
 const settings = {
@@ -560,6 +585,7 @@ function summary(account, path, item) {
     seq: item.uid,
     subject: item.subject,
     from: item.from,
+    to: item.to || [],
     date: item.date,
     timestamp: Date.parse(item.date) || 0,
     seen: Boolean(item.seen),
@@ -640,6 +666,11 @@ export function createDemoApi() {
     app: {
       info: () => realInfo,
       getAutoLaunch: async () => demoAutoLaunch,
+      copyText: async (text) => {
+        demoCopied.push(String(text || ''));
+        return true;
+      },
+      showItem: async () => true,
       setAutoLaunch: async (enabled) => {
         demoAutoLaunch = Boolean(enabled);
         demoAutoLaunchCalls.push(demoAutoLaunch);
@@ -823,6 +854,33 @@ export function createDemoApi() {
         return { messages: result.slice(0, 60), errors: [] };
       },
 
+      thread: async ({ accountId, subject }) => {
+        await wait(160);
+        const account = findAccount(accountId);
+        if (!account) throw new Error('账户不存在');
+        const normalize = (value) => {
+          let text = String(value || '').replace(/\s+/g, ' ').trim();
+          for (let guard = 0; guard < 8; guard += 1) {
+            const next = text.replace(/^\s*(?:(?:re|fw|fwd|aw|sv|答复|回复|转发|转寄)\s*[:：]\s*)+/i, '');
+            if (next === text) break;
+            text = next;
+          }
+          return text;
+        };
+        const wanted = normalize(subject);
+        const result = [];
+        const box = boxes[account.id] || {};
+        for (const [role, list] of Object.entries(box)) {
+          const folderPath = FOLDER_PATHS[role];
+          if (!folderPath) continue;
+          for (const item of list) {
+            if (normalize(item.subject) === wanted) result.push(summary(account, folderPath, item));
+          }
+        }
+        result.sort((a, b) => a.timestamp - b.timestamp || a.uid - b.uid);
+        return { subject: wanted, messages: result };
+      },
+
       read: async ({ accountId, path, uid }) => {
         await wait(140);
         const account = findAccount(accountId);
@@ -978,8 +1036,19 @@ export function createDemoApi() {
         await wait(220);
         return { canceled: true };
       },
+      saveAllAttachments: async () => {
+        await wait(220);
+        return {
+          canceled: false,
+          dir: 'C:\\Users\\Public\\Downloads',
+          files: [{ name: '附件.pdf', path: 'C:\\Users\\Public\\Downloads\\附件.pdf', size: 1024 }]
+        };
+      },
       onPush: (handler) => {
         demoPushHandler = handler;
+      },
+      onFiltered: (handler) => {
+        demoFilteredHandler = handler;
       },
       statuses: async () => [],
       onStatus: () => {}
@@ -1013,7 +1082,7 @@ export function createDemoApi() {
       list: async (accountId) => {
         await wait(80);
         return drafts
-          .filter((draft) => !accountId || draft.accountId === accountId)
+          .filter((draft) => !draft.sendAt && (!accountId || draft.accountId === accountId))
           .slice()
           .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
           .map((draft) => ({
@@ -1045,9 +1114,11 @@ export function createDemoApi() {
             inReplyTo: String(payload.inReplyTo || ''),
             references: String(payload.references || ''),
             attachments: Array.isArray(payload.attachments) ? payload.attachments.slice() : [],
+            sendAt: String(payload.sendAt || ''),
             updatedAt: new Date().toISOString()
           });
-          return { id: existing.id, accountId: existing.accountId, updatedAt: existing.updatedAt };
+          if (existing.sendAt) demoScheduledHandler?.({ reason: 'saved' });
+          return { id: existing.id, accountId: existing.accountId, updatedAt: existing.updatedAt, sendAt: existing.sendAt };
         }
         const draft = {
           id: makeId('draft'),
@@ -1061,16 +1132,127 @@ export function createDemoApi() {
           inReplyTo: String(payload.inReplyTo || ''),
           references: String(payload.references || ''),
           attachments: Array.isArray(payload.attachments) ? payload.attachments.slice() : [],
+          sendAt: String(payload.sendAt || ''),
           updatedAt: new Date().toISOString()
         };
         drafts.push(draft);
-        return { id: draft.id, accountId: draft.accountId, updatedAt: draft.updatedAt };
+        if (draft.sendAt) demoScheduledHandler?.({ reason: 'saved' });
+        return { id: draft.id, accountId: draft.accountId, updatedAt: draft.updatedAt, sendAt: draft.sendAt };
       },
 
       remove: async (id) => {
         await wait(60);
         const index = drafts.findIndex((item) => item.id === id);
         if (index >= 0) drafts.splice(index, 1);
+        demoScheduledHandler?.({ reason: 'removed' });
+        return true;
+      }
+    },
+
+    scheduled: {
+      list: async (accountId) => {
+        await wait(80);
+        return drafts
+          .filter((draft) => draft.sendAt && (!accountId || draft.accountId === accountId))
+          .slice()
+          .sort((a, b) => Date.parse(a.sendAt) - Date.parse(b.sendAt))
+          .map((draft) => ({
+            id: draft.id,
+            accountId: draft.accountId,
+            subject: draft.subject,
+            to: draft.to,
+            sendAt: draft.sendAt,
+            updatedAt: draft.updatedAt,
+            attachmentCount: (draft.attachments || []).length,
+            attempts: Number(draft.attempts) || 0,
+            lastError: String(draft.lastError || ''),
+            nextAttempt: Number(draft.nextAttempt) || 0
+          }));
+      },
+      cancel: async (id) => {
+        await wait(80);
+        const draft = drafts.find((item) => item.id === id);
+        if (!draft) return false;
+        draft.sendAt = '';
+        draft.attempts = 0;
+        draft.lastError = '';
+        demoScheduledHandler?.({ reason: 'cancelled' });
+        return true;
+      },
+      sendNow: async (id) => {
+        await wait(160);
+        const draft = drafts.find((item) => item.id === id);
+        if (!draft) throw new Error('定时邮件不存在');
+        const account = findAccount(draft.accountId);
+        if (!account) throw new Error('账户不存在');
+        const to = parseAddressList(draft.to);
+        boxes[account.id].sent.push(
+          message({
+            subject: draft.subject,
+            from: { name: account.name || '', address: account.email },
+            to,
+            cc: parseAddressList(draft.cc),
+            bcc: parseAddressList(draft.bcc),
+            date: new Date().toISOString(),
+            seen: true,
+            html: draft.html,
+            text: ''
+          })
+        );
+        const index = drafts.findIndex((item) => item.id === id);
+        if (index >= 0) drafts.splice(index, 1);
+        demoScheduledHandler?.({ type: 'sent', id, subject: draft.subject });
+        return { messageId: '<scheduled@demo.dymail>', savedToSent: true, warning: null };
+      },
+      onChange: (handler) => {
+        demoScheduledHandler = handler;
+      }
+    },
+
+    rules: {
+      list: async () => {
+        await wait(60);
+        return { rules: demoRules.map((rule) => ({ ...rule })), blacklist: demoBlacklist.slice() };
+      },
+      save: async (payload) => {
+        await wait(80);
+        const now = Date.now();
+        const record = {
+          id: payload.id || makeId('rule'),
+          name: String(payload.name || '').trim() || `匹配“${String(payload.value || '')}”`,
+          enabled: payload.enabled !== false,
+          field: payload.field || 'from',
+          value: String(payload.value || ''),
+          action: payload.action || 'read',
+          createdAt: now,
+          since: now
+        };
+        const index = demoRules.findIndex((rule) => rule.id === record.id);
+        if (index >= 0) {
+          record.createdAt = demoRules[index].createdAt;
+          demoRules[index] = record;
+        } else {
+          demoRules.push(record);
+        }
+        return record;
+      },
+      remove: async (id) => {
+        await wait(60);
+        demoRules = demoRules.filter((rule) => rule.id !== id);
+        return true;
+      },
+      addBlacklist: async (email) => {
+        await wait(60);
+        const address = String(email || '').trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new Error('邮箱地址格式不正确');
+        if (demoBlacklist.some((entry) => entry.email === address)) throw new Error('该地址已在黑名单中');
+        demoBlacklist.push({ email: address, addedAt: Date.now() });
+        return demoBlacklist.slice();
+      },
+      removeBlacklist: async (email) => {
+        await wait(60);
+        const index = demoBlacklist.findIndex((entry) => entry.email === String(email || '').toLowerCase());
+        if (index >= 0) demoBlacklist.splice(index, 1);
         return true;
       }
     },
@@ -1110,7 +1292,12 @@ export function createDemoApi() {
     files: {
       pick: async () => [
         { path: 'C:\\Users\\Public\\Documents\\预算模板.xlsx', name: '预算模板.xlsx', size: 28672 }
-      ]
+      ],
+      pathFor: (file) => {
+        if (file && file.path) return file.path;
+        const name = String((file && file.name) || '拖入附件.bin');
+        return `C:\\Users\\Public\\Documents\\${name}`;
+      }
     },
 
     settings: {

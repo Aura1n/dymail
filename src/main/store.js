@@ -5,6 +5,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { app, safeStorage } = require('electron');
+const { normalizeRule } = require('./filters');
 
 const COLORS = ['#0a84ff', '#34a853', '#ff9f0a', '#e5484d', '#8e5cf7', '#00a3a3', '#d6409f', '#6b7280'];
 const DEFAULT_UPDATE_REPO = 'Aura1n/dymail';
@@ -56,6 +57,20 @@ function cleanText(value, max) {
   return String(value == null ? '' : value).slice(0, max);
 }
 
+function cleanSendAt(value) {
+  const text = cleanText(value, 40).trim();
+  if (!text) return '';
+  const at = Date.parse(text);
+  if (!Number.isFinite(at)) throw new Error('定时发送时间无效');
+  return new Date(at).toISOString();
+}
+
+function cleanEmail(value) {
+  const email = cleanText(value, 320).trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('邮箱地址格式不正确');
+  return email;
+}
+
 class Store {
   constructor() {
     this.dir = app.getPath('userData');
@@ -72,6 +87,9 @@ class Store {
       accounts: [],
       settings: { ...DEFAULT_SETTINGS },
       drafts: [],
+      rules: [],
+      blacklist: [],
+      filterApplied: {},
       ui: {}
     };
     try {
@@ -85,6 +103,10 @@ class Store {
           ...(parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {})
         },
         drafts: Array.isArray(parsed.drafts) ? parsed.drafts : [],
+        rules: Array.isArray(parsed.rules) ? parsed.rules : [],
+        blacklist: Array.isArray(parsed.blacklist) ? parsed.blacklist : [],
+        filterApplied:
+          parsed.filterApplied && typeof parsed.filterApplied === 'object' ? parsed.filterApplied : {},
         ui: parsed.ui && typeof parsed.ui === 'object' ? parsed.ui : {}
       };
     } catch (err) {
@@ -361,7 +383,7 @@ class Store {
   }
 
   async listDrafts(accountId) {
-    const drafts = this.data.drafts.filter((draft) => !accountId || draft.accountId === accountId);
+    const drafts = this.data.drafts.filter((draft) => !draft.sendAt && (!accountId || draft.accountId === accountId));
     return drafts
       .map((draft) => {
         const payload = this._draftPayload(draft);
@@ -379,7 +401,32 @@ class Store {
   }
 
   draftCount(accountId) {
-    return this.data.drafts.filter((draft) => draft.accountId === accountId).length;
+    return this.data.drafts.filter((draft) => !draft.sendAt && draft.accountId === accountId).length;
+  }
+
+  async listScheduled(accountId) {
+    const records = this.data.drafts.filter(
+      (draft) => draft.sendAt && (!accountId || draft.accountId === accountId)
+    );
+    return records
+      .map((draft) => {
+        const payload = this._draftPayload(draft);
+        if (!payload) return null;
+        return {
+          id: draft.id,
+          accountId: draft.accountId,
+          subject: payload.subject,
+          to: payload.to,
+          sendAt: draft.sendAt,
+          updatedAt: draft.updatedAt,
+          attachmentCount: Array.isArray(draft.attachments) ? draft.attachments.length : 0,
+          attempts: Number(draft.attempts) || 0,
+          lastError: String(draft.lastError || ''),
+          nextAttempt: Number(draft.nextAttempt) || 0
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(a.sendAt) - new Date(b.sendAt));
   }
 
   async getDraft(id) {
@@ -401,6 +448,10 @@ class Store {
       accountId: draft.accountId,
       ...payload,
       attachments,
+      sendAt: String(draft.sendAt || ''),
+      attempts: Number(draft.attempts) || 0,
+      lastError: String(draft.lastError || ''),
+      nextAttempt: Number(draft.nextAttempt) || 0,
       updatedAt: draft.updatedAt
     };
   }
@@ -468,25 +519,36 @@ class Store {
       inReplyTo: cleanText(input.inReplyTo, 2000),
       references: cleanText(input.references, 20000)
     };
+    const sendAt = cleanSendAt(input.sendAt);
     const payloadEnc = this._encrypt(JSON.stringify(payload));
     const now = new Date().toISOString();
     if (draft) {
       draft.payloadEnc = payloadEnc;
       draft.attachments = attachments;
+      draft.sendAt = sendAt;
       draft.updatedAt = now;
+      if (!sendAt) {
+        draft.attempts = 0;
+        draft.lastError = '';
+        draft.nextAttempt = 0;
+      }
     } else {
       draft = {
         id,
         accountId,
         payloadEnc,
         attachments,
+        sendAt,
+        attempts: 0,
+        lastError: '',
+        nextAttempt: 0,
         createdAt: now,
         updatedAt: now
       };
       this.data.drafts.push(draft);
     }
     this._persist();
-    return { id, accountId, updatedAt: now };
+    return { id, accountId, updatedAt: now, sendAt };
   }
 
   async deleteDraft(id) {
@@ -510,6 +572,122 @@ class Store {
         await fsp.rm(path.join(this.draftsDir, draft.id), { recursive: true, force: true });
       } catch {}
     }
+  }
+
+  scheduledCount(accountId) {
+    return this.data.drafts.filter(
+      (draft) => draft.sendAt && (!accountId || draft.accountId === accountId)
+    ).length;
+  }
+
+  async markScheduledError(id, message, nextAttempt) {
+    const draft = this.data.drafts.find((item) => item.id === id);
+    if (!draft) return false;
+    draft.attempts = (Number(draft.attempts) || 0) + 1;
+    draft.lastError = cleanText(message, 400);
+    draft.nextAttempt = Math.max(0, Math.floor(Number(nextAttempt) || 0));
+    this._persist();
+    return true;
+  }
+
+  async clearSchedule(id) {
+    const draft = this.data.drafts.find((item) => item.id === id);
+    if (!draft) return false;
+    draft.sendAt = '';
+    draft.attempts = 0;
+    draft.lastError = '';
+    draft.nextAttempt = 0;
+    draft.updatedAt = new Date().toISOString();
+    this._persist();
+    return true;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Rules, blacklist and filter bookkeeping                           */
+  /* ---------------------------------------------------------------- */
+
+  listRules() {
+    return this.data.rules
+      .map((rule) => {
+        try {
+          return normalizeRule(rule, Number(rule.createdAt) || Date.now());
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }
+
+  saveRule(input) {
+    const now = Date.now();
+    const rule = normalizeRule(input, now);
+    /* Every save starts a fresh window: old mail that was never judged under
+       the previous condition should not suddenly be moved retroactively. */
+    rule.since = now;
+    const id = rule.id || crypto.randomUUID();
+    const index = rule.id ? this.data.rules.findIndex((item) => item.id === rule.id) : -1;
+    const record = {
+      ...rule,
+      id,
+      createdAt: index >= 0 ? Number(this.data.rules[index].createdAt) || now : now
+    };
+    if (index >= 0) this.data.rules[index] = record;
+    else this.data.rules.push(record);
+    this._persist();
+    return record;
+  }
+
+  deleteRule(id) {
+    const next = this.data.rules.filter((item) => item.id !== id);
+    if (next.length === this.data.rules.length) return false;
+    this.data.rules = next;
+    this._persist();
+    return true;
+  }
+
+  listBlacklist() {
+    return this.data.blacklist
+      .map((entry) => ({
+        email: cleanText(entry && entry.email, 320).trim().toLowerCase(),
+        addedAt: Number(entry && entry.addedAt) || 0
+      }))
+      .filter((entry) => entry.email);
+  }
+
+  addBlacklist(value) {
+    const email = cleanEmail(value).toLowerCase();
+    if (this.listBlacklist().some((entry) => entry.email === email)) {
+      throw new Error('该地址已在黑名单中');
+    }
+    this.data.blacklist.push({ email, addedAt: Date.now() });
+    this._persist();
+    return this.listBlacklist();
+  }
+
+  removeBlacklist(value) {
+    const email = cleanText(value, 320).trim().toLowerCase();
+    const next = this.data.blacklist.filter((entry) => String(entry.email).toLowerCase() !== email);
+    if (next.length === this.data.blacklist.length) return false;
+    this.data.blacklist = next;
+    this._persist();
+    return true;
+  }
+
+  isFilterApplied(key) {
+    return Boolean(key && this.data.filterApplied[key]);
+  }
+
+  markFilterApplied(keys) {
+    const list = (Array.isArray(keys) ? keys : []).filter(Boolean);
+    if (!list.length) return;
+    const now = Date.now();
+    for (const key of list) this.data.filterApplied[key] = now;
+    const entries = Object.entries(this.data.filterApplied);
+    if (entries.length > 5000) {
+      entries.sort((a, b) => Number(b[1]) - Number(a[1]));
+      this.data.filterApplied = Object.fromEntries(entries.slice(0, 5000));
+    }
+    this._persist();
   }
 
   /* Contacts live in their own plain-text file so they can be edited outside

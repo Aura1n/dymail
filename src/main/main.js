@@ -15,12 +15,14 @@ const {
   protocol,
   nativeTheme,
   Tray,
-  Notification
+  Notification,
+  clipboard
 } = require('electron');
 const { Store } = require('./store');
 const { MailService } = require('./mail');
 const { OAuthService } = require('./oauth');
 const { UpdateService } = require('./updater');
+const { Scheduler } = require('./scheduler');
 const { translateSegments } = require('./translate');
 
 protocol.registerSchemesAsPrivileged([
@@ -44,6 +46,7 @@ let store = null;
 let mail = null;
 let oauth = null;
 let updater = null;
+let scheduler = null;
 let tray = null;
 let isQuitting = false;
 const trayIconPath = path.join(__dirname, '../../assets/tray.png');
@@ -383,6 +386,20 @@ function registerIpc() {
     return true;
   });
 
+  handle('app:copy-text', (payload) => {
+    const text = String((payload && payload.text) || '');
+    if (!text) throw new Error('没有可复制的内容');
+    clipboard.writeText(text);
+    return true;
+  });
+
+  handle('app:show-item', (payload) => {
+    const file = path.resolve(String((payload && payload.path) || ''));
+    if (!file || !fs.existsSync(file)) throw new Error('文件或文件夹不存在');
+    shell.showItemInFolder(file);
+    return true;
+  });
+
   handle('app:get-autolaunch', () => app.getLoginItemSettings().openAtLogin);
 
   handle('app:set-autolaunch', (payload) => {
@@ -508,14 +525,19 @@ function registerIpc() {
 
   handle('mail:statuses', () => mail.statusList());
 
-  handle('mail:list', (payload) => {    const accountId = text(payload.accountId, 100);
+  handle('mail:list', async (payload) => {
+    const accountId = text(payload.accountId, 100);
     const mailboxPath = text(payload.path, 1024);
-    return mail.list({
+    const data = await mail.list({
       accountId,
       path: mailboxPath,
       cursor: payload.cursor,
       limit: payload.limit
     });
+    if (payload.role === 'inbox') {
+      mail.runFilters(data.messages).catch((err) => console.error('[filters]', err && err.message));
+    }
+    return data;
   });
 
   handle('mail:document', (payload) => {
@@ -523,9 +545,11 @@ function registerIpc() {
     return `mailview://doc/${rememberDocument(document)}`;
   });
 
-  handle('mail:list-unified', (payload) => {
+  handle('mail:list-unified', async (payload) => {
     const cursors = payload.cursors && typeof payload.cursors === 'object' ? payload.cursors : null;
-    return mail.listUnified({ cursors, limit: payload.limit });
+    const data = await mail.listUnified({ cursors, limit: payload.limit });
+    mail.runFilters(data.messages).catch((err) => console.error('[filters]', err && err.message));
+    return data;
   });
 
   handle('mail:list-starred', (payload) => {
@@ -547,6 +571,14 @@ function registerIpc() {
       query: text(payload.query, 200)
     });
   });
+
+  handle('mail:thread', (payload) =>
+    mail.thread({
+      accountId: text(payload.accountId, 100),
+      subject: text(payload.subject, 2000),
+      path: payload.path ? text(payload.path, 1024) : ''
+    })
+  );
 
   handle('mail:read', (payload) =>
     mail.read({
@@ -627,6 +659,15 @@ function registerIpc() {
     })
   );
 
+  handle('mail:save-all-attachments', (payload) =>
+    mail.saveAllAttachments({
+      accountId: text(payload.accountId, 100),
+      path: text(payload.path, 1024),
+      uid: payload.uid,
+      window: mainWindow
+    })
+  );
+
   handle('compose:send', (payload) => {
     const accountId = text(payload.accountId, 100);
     return mail.send({
@@ -654,12 +695,49 @@ function registerIpc() {
     return draft;
   });
 
-  handle('drafts:save', (payload) => {
+  handle('drafts:save', async (payload) => {
     if (!payload || typeof payload !== 'object') throw new Error('草稿内容无效');
-    return store.saveDraft(payload);
+    const result = await store.saveDraft(payload);
+    if (result && result.sendAt) {
+      scheduler.kick();
+      broadcast('scheduled:changed', { reason: 'saved' });
+    }
+    return result;
   });
 
-  handle('drafts:remove', (payload) => store.deleteDraft(text(payload.id, 100)));
+  handle('drafts:remove', async (payload) => {
+    const removed = await store.deleteDraft(text(payload.id, 100));
+    if (removed) broadcast('scheduled:changed', { reason: 'removed' });
+    return removed;
+  });
+
+  handle('scheduled:list', (payload) => {
+    const accountId = payload.accountId ? text(payload.accountId, 100) : '';
+    return store.listScheduled(accountId);
+  });
+
+  handle('scheduled:cancel', async (payload) => {
+    const id = text(payload.id, 100);
+    const cleared = await store.clearSchedule(id);
+    if (cleared) broadcast('scheduled:changed', { reason: 'cancelled' });
+    return cleared;
+  });
+
+  handle('scheduled:send-now', async (payload) => {
+    const result = await scheduler.send(text(payload.id, 100), { manual: true });
+    broadcast('scheduled:changed', { reason: 'sent' });
+    return result;
+  });
+
+  handle('rules:list', () => ({ rules: store.listRules(), blacklist: store.listBlacklist() }));
+
+  handle('rules:save', (payload) => store.saveRule(payload || {}));
+
+  handle('rules:remove', (payload) => store.deleteRule(text(payload.id, 100)));
+
+  handle('blacklist:add', (payload) => store.addBlacklist(payload && payload.email));
+
+  handle('blacklist:remove', (payload) => store.removeBlacklist(payload && payload.email));
 
   handle('contacts:list', () => store.listContacts());
 
@@ -744,14 +822,37 @@ async function boot() {
   store = new Store();
   oauth = new OAuthService(store);
   mail = new MailService(store, { oauth });
+  scheduler = new Scheduler({
+    store,
+    mail,
+    onEvent: (event) => {
+      broadcast('scheduled:changed', event);
+      if (event.type === 'error' && Number(event.attempts) > 1) return;
+      if (!Notification.isSupported()) return;
+      const title = event.type === 'sent' ? '定时邮件已发送' : '定时邮件发送失败';
+      const body =
+        event.type === 'sent'
+          ? String(event.subject || '无主题')
+          : `${String(event.subject || '无主题')}：${String(event.message || '')}`;
+      const notification = new Notification({
+        title,
+        body: body.slice(0, 400),
+        icon: fs.existsSync(trayIconPath) ? trayIconPath : undefined
+      });
+      notification.on('click', () => showMainWindow());
+      notification.show();
+    }
+  });
   updater = new UpdateService({ store, app, send: broadcast });
   mail.onNewMail = (accountId, path, count) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('mail:push', { accountId, path, count });
     }
   };
+  mail.onFiltered = (result) => broadcast('mail:filtered', result);
   mail.onStatus = (status) => broadcast('mail:status', status);
   mail.watchAll();
+  scheduler.start();
   buildMenu();
   registerIpc();
   syncThemeSource();
@@ -767,6 +868,7 @@ async function boot() {
 app.on('before-quit', () => {
   isQuitting = true;
   destroyTray();
+  if (scheduler) scheduler.stop();
   if (mail) mail.disconnectAll();
 });
 

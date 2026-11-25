@@ -4,6 +4,7 @@ const paths = {
     '<path d="M4 20h4.6L19.2 9.4a2.1 2.1 0 0 0 0-3L17.6 4.8a2.1 2.1 0 0 0-3 0L4 15.4V20Z"/><path d="m13.4 6.2 4.4 4.4"/>',
   edit: '<path d="M4 20h4l10.2-10.2a2.1 2.1 0 0 0 0-3l-.9-.9a2.1 2.1 0 0 0-3 0L4 16v4Z"/><path d="m12.8 7.2 4 4"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7"/>',
+  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 5.5V4.8A1.8 1.8 0 0 0 13.7 3H5.8A1.8 1.8 0 0 0 4 4.8v7.9a1.8 1.8 0 0 0 1.8 1.8H6.5"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   settings:
@@ -52,7 +53,11 @@ const paths = {
     '<path d="M2.6 18.6 6.1 7.7h.9l3.5 10.9"/><path d="M3.9 14.8h5.3"/><path d="M13.4 10.4h7.2"/><path d="M17 7.6v2.8"/><path d="M14.6 13.3c1.4 2.9 3.3 4.7 5.7 5.6"/><path d="M20.3 13.3c-1.4 2.9-3.3 4.7-5.7 5.6"/>',
   'image-off':
     '<path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5v-13Z"/><path d="m4 16 5-5 4 4 2-2 5 5"/><circle cx="15" cy="8.5" r="1.3"/><path d="m3 3 18 18"/>',
-  'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>'
+  'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  thread:
+    '<path d="M5.5 5.5h13a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H11l-3.8 3v-3H5.5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z"/><path d="M8 10h8M8 13h5"/>',
+  clock: '<circle cx="12" cy="12" r="8.2"/><path d="M12 7.5V12l3 2"/>',
+  filter: '<path d="M4 5h16l-6.2 7.2V20l-3.6-1.8v-6L4 5Z"/>'
 };
 
 export function icon(name, className = '') {

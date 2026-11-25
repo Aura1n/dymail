@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const { app, dialog } = require('electron');
 const { ImapFlow } = require('imapflow');
@@ -9,6 +10,7 @@ const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const addressparser = require('nodemailer/lib/addressparser');
 const { sanitizeFileName } = require('./store');
+const { normalizeSubject, planMessage } = require('./filters');
 
 const ROLE_ORDER = ['inbox', 'sent', 'drafts', 'junk', 'trash', 'archive'];
 const MAX_MESSAGE_BYTES = 30 * 1024 * 1024;
@@ -641,6 +643,7 @@ class MailService {
   _summary(account, mailboxPath, msg) {
     const envelope = msg.envelope || {};
     const from = primaryAddress(envelope.from);
+    const to = normalizeAddresses(envelope.to);
     const date = isoDate(envelope.date) || isoDate(msg.internalDate);
     const subject = cleanText(envelope.subject, 2000).trim();
     return {
@@ -653,6 +656,7 @@ class MailService {
       seq: Number(msg.seq),
       subject,
       from,
+      to,
       date,
       timestamp: date ? Date.parse(date) : 0,
       seen: hasFlag(msg.flags, '\\Seen'),
@@ -883,6 +887,196 @@ class MailService {
     });
     messages.sort((a, b) => b.timestamp - a.timestamp || b.seq - a.seq);
     return { messages: messages.slice(0, 120), errors };
+  }
+
+  /* Collects every message in one conversation: the same normalized subject
+     across Inbox, Sent and Archive, so replies from both directions appear
+     together even when the list only showed one folder. */
+  async thread({ accountId, subject, path: currentPath }) {
+    const key = String(accountId || '');
+    if (!key) throw new Error('账户不存在');
+    const normalized = normalizeSubject(subject);
+    if (!normalized) return { messages: [], subject: '' };
+    return this._enqueue(key, async (account, session) => {
+      const client = await this._connect(account, session);
+      const folders = await this._loadFolders(account, session, client, false);
+      const paths = new Set();
+      if (typeof currentPath === 'string' && currentPath) paths.add(currentPath);
+      for (const role of ['inbox', 'sent', 'archive']) {
+        const folder = folders.find((item) => item.role === role);
+        if (folder) paths.add(folder.path);
+      }
+      const messages = [];
+      const seen = new Set();
+      for (const mailboxPath of paths) {
+        try {
+          await this._ensureMailbox(client, mailboxPath);
+          const found = await client.search({ subject: normalized }, { uid: true });
+          const uids = (Array.isArray(found) ? found : [])
+            .map(Number)
+            .filter((uid) => uid > 0)
+            .slice(-200);
+          const range = compressUids(uids);
+          if (!range) continue;
+          for await (const msg of client.fetch(
+            range,
+            { uid: true, envelope: true, flags: true, internalDate: true },
+            { uid: true }
+          )) {
+            if (hasFlag(msg.flags, '\\Deleted')) continue;
+            const summary = this._summary(account, mailboxPath, msg);
+            if (normalizeSubject(summary.subject).toLowerCase() !== normalized.toLowerCase()) continue;
+            const dedupe = `${mailboxPath}\u0000${summary.uid}`;
+            if (seen.has(dedupe)) continue;
+            seen.add(dedupe);
+            messages.push(summary);
+          }
+        } catch {}
+      }
+      messages.sort((a, b) => a.timestamp - b.timestamp || a.uid - b.uid);
+      return { subject: normalized, messages };
+    });
+  }
+
+  /* Applies blacklist and rules to freshly listed inbox summaries. Operations
+     are grouped per folder so a mailbox costs one flag call and one move. */
+  async runFilters(messages) {
+    const rules = this.store.listRules();
+    const blacklist = this.store.listBlacklist();
+    if ((!rules.length && !blacklist.length) || !Array.isArray(messages) || !messages.length) {
+      return { processed: 0, blocked: 0, moved: 0 };
+    }
+    if (this.filtering) return { processed: 0, blocked: 0, moved: 0, skipped: true };
+    this.filtering = true;
+    const groups = new Map();
+    let matched = 0;
+    let blocked = 0;
+    try {
+      for (const message of messages) {
+        if (!message || !message.accountId || !message.path || !message.uid) continue;
+        const key = `${message.accountId}\u0000${message.path}\u0000${message.uid}`;
+        if (this.store.isFilterApplied(key)) continue;
+        const plan = planMessage({ rules, blacklist, message });
+        if (!plan.actions.length) continue;
+        matched += 1;
+        if (plan.blocked) blocked += 1;
+        const target = plan.actions.includes('trash')
+          ? 'trash'
+          : plan.actions.includes('archive')
+            ? 'archive'
+            : '';
+        const flags = [];
+        if (plan.actions.includes('read')) flags.push('\\Seen');
+        if (plan.actions.includes('star')) flags.push('\\Flagged');
+        const groupKey = `${message.accountId}\u0000${message.path}\u0000${target}`;
+        let group = groups.get(groupKey);
+        if (!group) {
+          group = {
+            accountId: message.accountId,
+            path: message.path,
+            target,
+            uids: [],
+            keys: [],
+            flags: new Set()
+          };
+          groups.set(groupKey, group);
+        }
+        group.uids.push(Number(message.uid));
+        group.keys.push(key);
+        for (const flag of flags) group.flags.add(flag);
+      }
+
+      let moved = 0;
+      for (const group of groups.values()) {
+        if (!group.uids.length) continue;
+        try {
+          if (group.flags.size) {
+            await this.setFlags({
+              accountId: group.accountId,
+              path: group.path,
+              uids: group.uids,
+              add: [...group.flags],
+              remove: []
+            });
+          }
+          if (group.target) {
+            await this.move({
+              accountId: group.accountId,
+              path: group.path,
+              uids: group.uids,
+              target: group.target
+            });
+            moved += group.uids.length;
+          }
+          this.store.markFilterApplied(group.keys);
+        } catch (err) {
+          console.error('[filters]', err && err.message ? err.message : err);
+        }
+      }
+      const result = { processed: matched, blocked, moved };
+      if (this.onFiltered) {
+        try {
+          this.onFiltered(result);
+        } catch {}
+      }
+      return result;
+    } finally {
+      this.filtering = false;
+    }
+  }
+
+  async _parsedAttachments(accountId, mailboxPath, uid) {
+    const uidNumber = Number(uid);
+    if (!Number.isInteger(uidNumber) || uidNumber < 1) throw new Error('附件不存在');
+    return this._enqueue(accountId, async (account, session) => {
+      const client = await this._connect(account, session);
+      const parsed = await this._fetchParsed(account, session, client, mailboxPath, uidNumber);
+      return Array.isArray(parsed.attachments) ? parsed.attachments : [];
+    });
+  }
+
+  async saveAllAttachments({ accountId, path: mailboxPath, uid, window }) {
+    const attachments = await this._parsedAttachments(accountId, mailboxPath, uid);
+    const items = attachments.filter(
+      (item) =>
+        Buffer.isBuffer(item.content) &&
+        item.content.length &&
+        !(item.cid && (item.related || String(item.contentDisposition || '').toLowerCase() === 'inline'))
+    );
+    if (!items.length) throw new Error('没有可保存的附件');
+    let defaultDir;
+    try {
+      defaultDir = app.getPath('downloads');
+    } catch {
+      defaultDir = app.getPath('documents');
+    }
+    const choice = await dialog.showOpenDialog(window, {
+      title: '选择附件保存位置',
+      defaultPath: defaultDir,
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (choice.canceled || !choice.filePaths || !choice.filePaths[0]) return { canceled: true };
+    const dir = choice.filePaths[0];
+    const saved = [];
+    const used = new Set();
+    for (const item of items) {
+      let name = sanitizeFileName(item.filename || 'attachment') || 'attachment';
+      let counter = 1;
+      const collision = () =>
+        used.has(name.toLowerCase()) ||
+        fs.existsSync(path.join(dir, name));
+      while (collision()) {
+        const ext = path.extname(name);
+        const base = name.slice(0, name.length - ext.length).replace(/-\d+$/, '') || 'attachment';
+        name = `${base}-${counter}${ext}`;
+        counter += 1;
+      }
+      used.add(name.toLowerCase());
+      const target = path.join(dir, name);
+      await fsp.writeFile(target, item.content);
+      saved.push({ name, path: target, size: item.content.length });
+    }
+    return { canceled: false, dir, files: saved };
   }
 
   async setFlags({ accountId, path: mailboxPath, uids, add, remove }) {

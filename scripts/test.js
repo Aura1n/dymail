@@ -25,9 +25,12 @@ const nodeTests = [
   'test-batch-move.js',
   'test-contacts-store.js',
   'test-restore-purge.js',
+  'test-filters.js',
+  'test-filter-engine.js',
+  'test-scheduler.js',
   'test-translate.js'
 ];
-const electronTests = ['store-oauth.test.js'];
+const electronTests = ['store-oauth.test.js', 'store-features.test.js'];
 
 const filter = process.argv[2] || '';
 const selected = (name) => !filter || name.includes(filter);
