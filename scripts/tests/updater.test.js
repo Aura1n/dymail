@@ -34,10 +34,19 @@ function release(digestValue) {
   };
 }
 
+/* 同一仓库也会发 Android 版（只有 .apk、标签带 android- 前缀），它排在 Windows 版前面。 */
+const androidRelease = {
+  tag_name: 'android-v0.1.0',
+  name: 'Dymail for Android 0.1.0',
+  body: 'android',
+  html_url: 'https://github.com/owner/repo/releases/tag/android-v0.1.0',
+  assets: [{ name: 'Dymail-Android-0.1.0.apk', size: 55 * 1024 * 1024, browser_download_url: 'https://download.test/Dymail-Android-0.1.0.apk' }]
+};
+
 function makeFetch(digestValue) {
   return async (url) => {
     if (String(url).startsWith('https://api.github.com/')) {
-      return new Response(JSON.stringify(release(digestValue)), { status: 200 });
+      return new Response(JSON.stringify([androidRelease, release(digestValue)]), { status: 200 });
     }
     if (String(url).startsWith('https://download.test/')) {
       return new Response(payload, {

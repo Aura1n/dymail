@@ -61,11 +61,13 @@ class UpdateService {
     return repo;
   }
 
+  /* 同一个仓库也发 Android 版（标签 android-v0.1.0，只有 .apk），所以不能直接用 /releases/latest：
+     它可能指向一个没有 Windows 安装包的发布。改为列出最近的发布，取最新的、带 .exe 的那个。 */
   async _release() {
     const repo = this._repo();
     let response;
     try {
-      response = await this.fetchImpl(`https://api.github.com/repos/${repo}/releases/latest`, {
+      response = await this.fetchImpl(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
         headers: { accept: 'application/vnd.github+json', 'user-agent': 'Dymail' }
       });
     } catch {
@@ -73,9 +75,18 @@ class UpdateService {
     }
     if (response.status === 404) throw new Error('该仓库还没有发布版本');
     if (!response.ok) throw new Error(`更新源返回 ${response.status}`);
-    const release = await response.json();
+    const list = await response.json();
+    if (!Array.isArray(list) || !list.length) throw new Error('该仓库还没有发布版本');
+
+    const usable = list
+      .filter((item) => item && !item.draft && !item.prerelease)
+      .filter((item) => pickAsset(item.assets, false) || pickAsset(item.assets, true))
+      .filter((item) => /^\d+(\.\d+)*/.test(versionOf(item)));
+    if (!usable.length) throw new Error('该仓库还没有可用的 Windows 发布');
+
+    /* 按版本号比较，而不是按发布时间：补发一个旧版本时，列表顺序会误导。 */
+    const release = usable.reduce((best, item) => (compareVersions(versionOf(item), versionOf(best)) > 0 ? item : best));
     const latest = versionOf(release);
-    if (!/^\d+(\.\d+)*/.test(latest)) throw new Error('无法识别最新版本号');
     return { release, latest };
   }
 
