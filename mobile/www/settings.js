@@ -338,7 +338,9 @@ export function openAddAccount(onDone) {
         payload.authType = 'oauth2';
         payload.oauthTicket = st.oauth.ticket;
       } else {
-        const entered = p.id === 'gmail' ? secret.value.replace(/\s+/g, '') : secret.value;
+        /* Auth codes / app passwords never contain spaces; pasted ones often carry a stray
+           space or newline. Only true login passwords (aliyun, custom) are kept verbatim. */
+        const entered = p.passwordLabel === '密码' ? secret.value : secret.value.replace(/\s+/g, '');
         if (!entered) {
           showError(`请输入${p.passwordLabel || '密码'}`);
           return;

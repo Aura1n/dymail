@@ -103,6 +103,16 @@ function isGoogleMail(account) {
   );
 }
 
+// QQ / Foxmail reject the QQ login password outright; only the generated auth code works.
+function isQQMail(account) {
+  const hosts = [account && account.imap && account.imap.host, account && account.smtp && account.smtp.host]
+    .map((host) => String(host || '').toLowerCase());
+  const domain = String((account && account.email) || '').split('@').pop().toLowerCase();
+  return (
+    hosts.some((host) => /(^|\.)(qq|foxmail)\.com$/.test(host)) || domain === 'qq.com' || domain === 'foxmail.com'
+  );
+}
+
 function friendlyError(err, prefix, account) {
   const code = String((err && err.code) || '').toUpperCase();
   const message = String((err && err.message) || '');
@@ -114,7 +124,9 @@ function friendlyError(err, prefix, account) {
         ? 'OAuth 授权已失效，请在账户设置中重新授权'
         : isGoogleMail(account)
           ? 'Gmail 不接受账号密码：请在 Google 账号开启两步验证，再生成 16 位「应用专用密码」填入密码框；企业或学校域名通常只能改用 OAuth 登录'
-          : '邮箱或密码不正确，或需要应用授权码';
+          : isQQMail(account)
+            ? 'QQ 邮箱不接受 QQ 密码：请在网页版邮箱「设置 → 账号与安全 → 安全设置」开启 IMAP/SMTP 服务，生成 16 位授权码填入；修改 QQ 密码后旧授权码会全部失效，需重新生成'
+            : '邮箱或密码不正确，或需要应用授权码';
   } else if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || lower.includes('getaddrinfo')) {
     text = '无法解析邮件服务器地址';
   } else if (code === 'ECONNREFUSED') {
