@@ -1,6 +1,6 @@
 'use strict';
 
-/* Builds the Windows artifacts and writes SHA256SUMS-<version>.txt.
+/* Builds the Windows artifacts and prints their SHA-256 hashes.
    Usage:
      npm run build:dir        unpacked app in dist/win-unpacked
      npm run build:portable   portable exe
@@ -42,19 +42,13 @@ function reportArtifacts(startedAt) {
     return;
   }
 
-  const lines = [];
   console.log('\nArtifacts:');
   for (const name of artifacts) {
     const file = path.join(outDir, name);
     const size = (fs.statSync(file).size / (1024 * 1024)).toFixed(1);
     const digest = sha256(file);
-    lines.push(`${digest}  ${name}`);
     console.log(`  ${name}  ${size} MB\n    sha256 ${digest}`);
   }
-
-  const sumsFile = path.join(outDir, `SHA256SUMS-${pkg.version}.txt`);
-  fs.writeFileSync(sumsFile, `${lines.join('\n')}\n`, 'utf8');
-  console.log(`\nChecksums written to ${sumsFile}`);
 }
 
 async function main() {
