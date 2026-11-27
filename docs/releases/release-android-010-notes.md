@@ -23,3 +23,4 @@
 ## 下载
 
 - `Dymail-Android-0.1.0.apk` — 直接安装（约 53 MB）
+  - SHA-256：`ab973f5afb73deeba7090d763b72da0ff25aa148b6f1e9258911c8a244c5fb6a`
