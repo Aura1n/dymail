@@ -1,0 +1,13 @@
+{
+  "appId": "com.dymail.mobile",
+  "appName": "Dymail",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http"
+  },
+  "plugins": {
+    "CapacitorNodeJS": {
+      "nodeDir": "nodejs"
+    }
+  }
+}

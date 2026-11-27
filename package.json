@@ -21,13 +21,19 @@
     "clean": "node scripts/clean.js"
   },
   "dependencies": {
+    "@capacitor/android": "^8.6.3",
+    "@capacitor/browser": "^8.0.5",
+    "@capacitor/core": "^8.6.3",
+    "capacitor-nodejs": "https://github.com/hampoelz/capacitor-nodejs/releases/download/v1.0.0-beta.10/capacitor-nodejs.tgz",
     "imapflow": "2.10.0",
     "mailparser": "3.14.1",
     "nodemailer": "10.3.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.3",
     "electron": "45.2.1",
     "electron-builder": "26.18.0",
+    "esbuild": "^0.28.2",
     "png-to-ico": "2.1.8"
   },
   "build": {

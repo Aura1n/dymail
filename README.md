@@ -26,11 +26,12 @@ Windows 桌面邮件客户端，把 Gmail、Outlook、QQ、163 等多个邮箱�
 在 [Releases](https://github.com/Aura1n/dymail/releases) 下载：
 
 - `Dymail-Setup-<version>.exe`：安装版，带开始菜单与桌面快捷方式
-- `Dymail-<version>.exe`：单文件便携版，直接运行
+- `Dymail-<version>.exe`：单文件便携版
+- `Dymail-Android-<version>.apk`：Android 版（自签名，仅 arm64，需允许安装未知应用；源码与打包说明在 [mobile/](mobile/)），直接运行
 
 ## 说明
 
-- 仅支持 64 位 Windows 10 / 11
+- 仅支持 64 位 Windows 10 / 11；Android 版见 `mobile/BUILD-ANDROID.md`
 - 部分 Microsoft 365 租户关闭了 IMAP，OAuth 授权成功也无法收信
 - 便携版自动更新会下载新版本并在退出后启动，但不会删除旧文件
 

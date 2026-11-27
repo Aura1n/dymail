@@ -1,0 +1,54 @@
+/* Second pass of the mobile styles: conversations, swipe, attachments, rules, contacts, update sheet. */
+
+/* ---------- list rows: swipe + conversation count ---------- */
+.row { touch-action: pan-y; }
+.swipewrap { position: relative; }
+.swipewrap .row { background: var(--bg); will-change: transform; }
+.swipewrap .row.sel,
+.swipewrap .row:active { background: var(--surface); }
+.swipebg { position: absolute; inset: 0 6px; border-radius: 16px; display: none; align-items: center; gap: 8px; padding: 0 22px; color: #fff; font-size: 14px; font-weight: 600; }
+.swipewrap[data-dir="right"] .swipebg.read { display: flex; justify-content: flex-start; background: #3b82f6; }
+.swipewrap[data-dir="left"] .swipebg.arch { display: flex; justify-content: flex-end; background: #10a37f; }
+.row .cnt { flex: none; font-size: 12px; color: var(--faint); background: var(--surface-2); border-radius: 10px; padding: 0 7px; line-height: 18px; }
+.row .err { color: var(--danger); }
+.row .meta.sched { color: var(--muted); }
+.filters { padding: 0 16px; margin-top: 2px; }
+.filters .pillchip { height: 30px; font-size: 13px; padding: 0 12px; }
+
+/* ---------- reader: conversation cards ---------- */
+.mcard { border-top: 1px solid var(--line); padding: 14px 0; }
+.mcard:first-child { border-top: 0; padding-top: 4px; }
+.mcard .who { margin: 0; }
+.mcard.collapsible .who { cursor: pointer; }
+.mcard .cardbody { padding-top: 14px; }
+.mcard.closed .cardbody { display: none; }
+.mcard.closed .who .name { font-weight: 500; }
+.mcard .chev { color: var(--faint); transition: transform 0.18s; display: inline-flex; margin-top: 2px; }
+.mcard:not(.closed) .chev { transform: rotate(90deg); }
+
+/* ---------- compose: attachments, schedule, suggestions ---------- */
+.composer .chips { margin: 8px 0 0; }
+.chip .x { display: inline-flex; color: var(--faint); padding: 2px; margin-right: -4px; }
+.iconbtn.small { width: 36px; height: 36px; color: var(--muted); }
+.suggest { padding: 8px 20px 0; margin: 0; }
+.suggest .pillchip { height: 32px; font-size: 13px; }
+
+/* ---------- sheets ---------- */
+.notes { margin: 0 12px 10px; max-height: 34vh; overflow: auto; white-space: pre-wrap; font-size: 14px; color: var(--muted); background: var(--surface); padding: 12px 14px; border-radius: 14px; }
+.sheet p.hash { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: var(--faint); margin-top: -4px; }
+.sheet .formrow { margin-left: 12px; margin-right: 12px; }
+
+/* ---------- settings cells ---------- */
+.cell.press:active { background: var(--surface-2); }
+.cell .plain { flex: 1; min-width: 0; border: 0; outline: 0; background: none; text-align: right; font-size: 15px; color: var(--muted); }
+.cell .sub.err { color: var(--danger); }
+.cellmain { flex: 1; min-width: 0; padding: 8px 0; }
+.cellmain .t { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cellmain .s { font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell .avatar { width: 36px; height: 36px; font-size: 14px; }
+.cell .iconbtn { width: 36px; height: 36px; margin-right: -8px; color: var(--faint); }
+.inlineadd { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.inlineadd .input { height: 44px; background: var(--bg); }
+.inlineadd .btn { flex: none; height: 44px; padding: 0 18px; }
+.cell.empty-note { color: var(--faint); font-size: 14px; justify-content: center; min-height: 64px; }
+.pagesearch { padding: 0 16px 8px; }
