@@ -104,7 +104,8 @@ export function createNativeApi({ url, token }) {
       list: () => call('accounts:list'),
       save: (payload) => call('accounts:save', payload),
       remove: (id) => call('accounts:remove', { id }),
-      oauthStart: (provider) => call('accounts:oauth-authorize', { provider })
+      oauthStart: (provider) => call('accounts:oauth-authorize', { provider }),
+      oauthProviders: () => call('mobile:oauth-providers')
     },
     folders: {
       sync: () => call('folders:sync'),

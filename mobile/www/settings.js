@@ -226,8 +226,19 @@ function guessSecure(port, kind) {
   return kind === 'imap' ? n !== 143 : n === 465;
 }
 
+/* Which OAuth logins this build can actually offer (client IDs are baked in at build time).
+   Cached: the answer cannot change while the app runs. Demo mode always "has" them. */
+let oauthCache = null;
+function oauthAvailability() {
+  if (S.demo) return Promise.resolve({ google: true, microsoft: true });
+  if (!oauthCache) {
+    oauthCache = S.api.accounts.oauthProviders().catch(() => ({ google: false, microsoft: false }));
+  }
+  return oauthCache;
+}
+
 export function openAddAccount(onDone) {
-  const st = { provider: providerById('gmail'), oauth: null, busy: false };
+  const st = { provider: providerById('gmail'), oauth: null, oauthOk: null, busy: false };
   let errorEl;
   let body;
 
@@ -241,9 +252,10 @@ export function openAddAccount(onDone) {
     const imapPort = input({ type: 'number', inputmode: 'numeric', placeholder: '993' });
     const smtpHost = input({ type: 'text', placeholder: 'smtp.example.com' });
     const smtpPort = input({ type: 'number', inputmode: 'numeric', placeholder: '465' });
-    const oauthBtn = h('button', { class: 'btn', type: 'button' });
+    const oauthBtn = h('button', { class: 'btn block', type: 'button' });
     const oauthState = h('div', { class: 'note' });
     const hint = h('div', { class: 'note' });
+    const helpLink = h('button', { class: 'linkrow', type: 'button' });
     const chips = h('div', { class: 'chiprow' });
     const passRow = h('div', { class: 'formrow' }, h('label', null, '密码'), secret);
     const customRows = h('div', null, h('div', { class: 'formrow' }, h('label', null, 'IMAP 服务器'), h('div', { class: 'cols' }, imapHost, imapPort)), h('div', { class: 'formrow' }, h('label', null, 'SMTP 服务器'), h('div', { class: 'cols' }, smtpHost, smtpPort)));
@@ -259,21 +271,35 @@ export function openAddAccount(onDone) {
           h('button', { class: `pillchip${item.id === p.id ? ' on' : ''}`, type: 'button', onClick: () => { st.provider = item; st.oauth = null; drawProvider(); } }, item.label)
         )
       );
-      hint.textContent = p.hint || '';
-      passRow.querySelector('label').textContent = p.passwordLabel || '密码';
       const isCustom = p.id === 'custom';
       customRows.hidden = !isCustom;
       if (isCustom) {
         if (!imapPort.value) imapPort.value = '993';
         if (!smtpPort.value) smtpPort.value = '465';
       }
+      /* Three states per OAuth provider: enabled (real button), blocked (this build has no client
+         ID — explain instead of offering a dead button), or not an OAuth provider at all. */
+      const oauthEnabled = Boolean(p.oauth) && Boolean(st.oauthOk && st.oauthOk[p.oauth]);
+      const oauthBlocked = Boolean(p.oauth) && Boolean(st.oauthOk) && !st.oauthOk[p.oauth];
       const oauthLabel = p.oauth === 'google' ? 'Google' : p.oauth === 'microsoft' ? 'Microsoft' : '';
-      oauthBtn.hidden = !p.oauth;
+      oauthBtn.hidden = !oauthEnabled;
       oauthBtn.textContent = st.oauth ? `已授权 ${st.oauth.email}（重新授权）` : `使用 ${oauthLabel} 账号登录`;
-      oauthState.hidden = !p.oauth;
-      oauthState.textContent = st.oauth ? '' : '将打开系统浏览器完成授权，令牌不会出现在界面里';
-      passRow.hidden = Boolean(st.oauth);
+      oauthState.hidden = !oauthEnabled || Boolean(st.oauth);
+      oauthState.textContent = '将打开系统浏览器完成授权，完成后回到本应用';
+      hint.textContent = (oauthBlocked ? p.noOauthHint : p.hint) || '';
+      helpLink.hidden = !p.helpUrl || Boolean(st.oauth) || oauthBlocked;
+      helpLink.textContent = `${p.helpLabel || `获取${p.passwordLabel || '密码'}`} ↗`;
+      passRow.hidden = Boolean(st.oauth) || oauthBlocked;
+      passRow.querySelector('label').textContent = p.passwordLabel || '密码';
+      /* Outlook without OAuth cannot work at all (Microsoft killed password login) — don't pretend. */
+      submit.disabled = st.busy || oauthBlocked;
     };
+
+    helpLink.addEventListener('click', () => {
+      const url = st.provider.helpUrl;
+      if (!url) return;
+      S.api.app.open(url).catch((err) => toast(err && err.message ? err.message : '无法打开链接'));
+    });
 
     email.addEventListener('input', () => {
       const guess = providerForEmail(email.value);
@@ -345,6 +371,7 @@ export function openAddAccount(onDone) {
       oauthBtn,
       oauthState,
       hint,
+      helpLink,
       h('div', { class: 'formrow' }, h('label', null, '邮箱地址'), email),
       h('div', { class: 'formrow' }, h('label', null, '显示名称'), name),
       passRow,
@@ -353,6 +380,7 @@ export function openAddAccount(onDone) {
       submit
     );
     drawProvider();
+    oauthAvailability().then((available) => { st.oauthOk = available; drawProvider(); });
 
     page.append(h('header', { class: 'topbar' }, iconBtn('back', '返回', () => closeTop()), h('div', { class: 'title' }, '添加账户')), h('div', { class: 'scroll' }, body));
   });

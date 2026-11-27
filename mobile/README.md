@@ -107,7 +107,7 @@ cd mobile && npm run apk              # 打包 + 补丁 + 签名，产出 releas
 
 **暂未实现**
 
-- Gmail / Outlook 网页授权登录（需要把 OAuth Client ID 打进包里）
+- Gmail / Outlook 网页授权登录默认关闭：构建时注入 OAuth Client ID 后才显示登录按钮（见 BUILD-ANDROID.md）；未注入时页面引导用应用专用密码，Outlook 因微软停用密码登录暂无法添加
 - 密钥放进 Android Keystore
 - 点通知直接跳到那封邮件、使用应用自己的通知图标
 - 进程被结束后自动恢复后台收信（受 Node 运行时限制）

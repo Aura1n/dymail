@@ -227,6 +227,21 @@ function registerMobileHandlers() {
     }
   });
 
+  /* Which OAuth logins this build can offer. The client IDs come from oauth-config.js, whose
+     env reads are replaced at bundle time (build-www.js). Without an ID the sign-in button
+     would only produce an error, so the UI hides it and guides to app passwords instead. */
+  handlers.set('mobile:oauth-providers', async () => {
+    try {
+      const clients = require('../../src/main/oauth-config');
+      return ok({
+        google: Boolean(clients.google && clients.google.clientId),
+        microsoft: Boolean(clients.microsoft && clients.microsoft.clientId)
+      });
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
   /* Reads the update source from the same saved setting the desktop uses (settings.updateRepo). */
   handlers.set('mobile:update-check', async () => {
     try {

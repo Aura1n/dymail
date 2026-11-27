@@ -83,7 +83,15 @@ const result = esbuild.buildSync({
   target: 'node18',
   external: ['bridge'],
   alias: { electron: path.join(mobile, 'core', 'electron-shim.js') },
-  define: { 'process.env.DYMAIL_BUNDLED': '"1"' },
+  /* OAuth client IDs are read from the build machine's environment and frozen into the bundle
+     (the phone has no env). Unset = empty = the UI hides that sign-in button. */
+  define: {
+    'process.env.DYMAIL_BUNDLED': '"1"',
+    'process.env.DYMAIL_GOOGLE_CLIENT_ID': JSON.stringify(process.env.DYMAIL_GOOGLE_CLIENT_ID || ''),
+    'process.env.DYMAIL_GOOGLE_CLIENT_SECRET': JSON.stringify(process.env.DYMAIL_GOOGLE_CLIENT_SECRET || ''),
+    'process.env.DYMAIL_MICROSOFT_CLIENT_ID': JSON.stringify(process.env.DYMAIL_MICROSOFT_CLIENT_ID || ''),
+    'process.env.DYMAIL_MICROSOFT_TENANT': JSON.stringify(process.env.DYMAIL_MICROSOFT_TENANT || 'common')
+  },
   legalComments: 'none',
   logLevel: 'warning',
   metafile: true

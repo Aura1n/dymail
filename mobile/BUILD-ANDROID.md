@@ -71,7 +71,7 @@ C:\Users\zara\AppData\Local\Android\Sdk\platform-tools\adb.exe install -r mobile
 
 ## 第六步：开启后台收信并测试
 
-1. 第一次打开会等几秒（本地邮件服务在启动）。添加账户，**先用 QQ / 163 这类授权码方式**（Gmail / Outlook 网页授权登录这个版本用不了）。
+1. 第一次打开会等几秒（本地邮件服务在启动）。添加账户，**先用 QQ / 163 这类授权码方式**，页面里有各家授权码的官方获取入口；Gmail 用应用专用密码（默认构建未开通网页授权登录）。
 2. 进入 **设置 → 后台收信**，打开开关：
    - 先弹出通知权限（Android 13 及以上），选「允许」；
    - 再弹出电池优化对话框，选「允许」，否则熄屏后系统可能暂停联网；
@@ -89,6 +89,23 @@ adb shell dumpsys deviceidle whitelist | findstr dymail
 ```
 
 第二条能看到应用是否在电池优化白名单里。也可以在电脑 Chrome 打开 `chrome://inspect` 查看手机里的页面（调试版可用）。
+
+## 启用 Google / Microsoft 授权登录（可选）
+
+授权登录走「系统浏览器 + 本机回环回调」，手机上同样可用，但需要你自己注册 OAuth 客户端（一次性）：
+
+1. Google：Cloud Console → OAuth 同意屏幕（外部；`https://mail.google.com/` 是受限作用域，测试阶段把自己的账号加进测试用户）→ 凭据 → 创建「桌面应用」客户端，拿到 Client ID（和 Secret）。
+2. Microsoft：Entra 管理中心 → 应用注册 → 平台选「移动和桌面应用」，重定向 URI 填 `http://localhost`（任意端口）。
+3. 构建前在命令行注入，再 `npm run apk`：
+
+```bat
+set DYMAIL_GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
+set DYMAIL_GOOGLE_CLIENT_SECRET=xxxx
+set DYMAIL_MICROSOFT_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+npm run apk
+```
+
+构建脚本会把这几个值冻结进核心包；没注入的提供商在添加账户页不显示登录按钮，改为引导应用专用密码。注入后按钮出现，授权在系统浏览器完成（此路径尚未在真机验证）。
 
 ## 发版
 
@@ -124,7 +141,7 @@ adb shell dumpsys deviceidle whitelist | findstr dymail
 | 耗电 | 一条常驻通知，加每 N 分钟一次的短暂唤醒；没有长期持有唤醒锁。间隔越短越及时、越耗电。 |
 | 通知点开只打开应用 | 不会直接跳到那封邮件。 |
 | 通知图标 | 用的是系统自带图标，不是应用图标。 |
-| Gmail / Outlook 网页授权登录不可用 | 桌面版靠环境变量提供 OAuth Client ID，手机上没有这个入口；先用应用专用密码 / 授权码。 |
+| Gmail / Outlook 网页授权登录默认关闭 | 构建时没有注入 OAuth Client ID（见下方「启用 Google / Microsoft 授权登录」）。未注入时界面不再显示登录按钮，改为引导用应用专用密码；Outlook 因微软停用密码登录而无法添加。 |
 | 密钥不在 Android Keystore | 账户密码是加密保存的，但密钥文件放在应用私有目录里，和数据在一起。能挡住其他应用，挡不住 root 或完整备份。 |
 | 保存的附件看不到 | 附件保存在应用私有目录，文件管理器里找不到。需要再接入「分享/另存为」。 |
 | Node 18、没有 Intl | 联系人排序等少数地方可能和桌面略有差异。 |

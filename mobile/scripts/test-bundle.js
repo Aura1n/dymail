@@ -83,6 +83,16 @@ const finish = (code) => {
   r = await rpc('accounts:list', {});
   check('accounts:list works', r.body.ok === true && Array.isArray(r.body.data), JSON.stringify(r.body));
 
+  /* OAuth availability must mirror what was baked in at build time (env of the build machine). */
+  r = await rpc('mobile:oauth-providers', {});
+  check(
+    'oauth-providers reflects the baked-in client IDs',
+    r.body.ok === true &&
+      r.body.data.google === Boolean(process.env.DYMAIL_GOOGLE_CLIENT_ID) &&
+      r.body.data.microsoft === Boolean(process.env.DYMAIL_MICROSOFT_CLIENT_ID),
+    JSON.stringify(r.body)
+  );
+
   const staged = await rpc('mobile:stage-file', { name: 'a.txt', data: Buffer.from('x').toString('base64') });
   check('stage-file writes under the app data dir', staged.body.ok === true && staged.body.data.path.startsWith(path.join(work, 'appdata')), JSON.stringify(staged.body));
 
